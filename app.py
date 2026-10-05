@@ -193,42 +193,135 @@ def select_card(key: str) -> None:
 
 
 def render_card(column, key: str, caption: str, label: str, value: str,
-                delta: str | None, button_label: str) -> None:
-    selected = focus == key
+                delta: str | None, button_label: str, extra_buttons: bool = False) -> None:
     with column:
         box = st.container(border=True)
-        box.caption(caption)
+        box.markdown(f"#### {caption}")
         box.metric(label, value, delta=delta, delta_color="inverse")
-        box.button("Hide chart" if selected else button_label, key=f"focus_{key}",
-                   use_container_width=True,
-                   type="primary" if selected else "secondary",
-                   on_click=select_card, args=(key,))
+        buttons = [(key, button_label)]
+        if extra_buttons:
+            buttons += [(f"{key}:{option}", option) for option in WORST_OPTIONS]
+        for button_key, text in buttons:
+            selected = focus == button_key
+            box.button(f"Hide {text.lower().removeprefix('show ')}" if selected else text,
+                       key=f"focus_{button_key}", use_container_width=True,
+                       type="primary" if selected else "secondary",
+                       on_click=select_card, args=(button_key,))
 
+
+WORST_OPTIONS = ["Top worst REX", "Top worst batch date", "Top worst product family"]
 
 render_card(
     card_columns[0], "year",
     f"Year to date · {current_year}", metric, format_value(year_value),
     delta_text(year_value, prior_year_value, str(previous_year)),
-    "Show yearly chart",
+    "Show yearly trend chart", extra_buttons=True,
 )
 render_card(
     card_columns[1], "month",
     f"Current month · {current_period_label}", metric, format_value(month_value),
     delta_text(month_value, prior_month_value, previous_period_label),
-    "Show monthly chart",
+    "Show monthly trend chart", extra_buttons=True,
 )
 render_card(
     card_columns[2], "reason",
-    f"Top complaint · {current_period_label}",
+    f"Top complaint this month · {current_period_label}",
     top_reason or "No complaints",
     format_value(top_reason_value) if top_reason else "—",
     delta_text(top_reason_value, prior_top_reason_value, previous_period_label)
     if top_reason else None,
-    "Show complaint chart",
+    "Show complaint trends chart",
 )
+
+def metric_by(complaint_rows: pd.DataFrame, batch_rows: pd.DataFrame, key: str) -> pd.Series:
+    if metric == "PQR count":
+        return complaint_rows.groupby(key).size().astype(float)
+    if metric == "Settlement total":
+        return complaint_rows.groupby(key)["Settlement_Total"].sum()
+    out = pd.concat([complaint_rows.groupby(key).size().rename("PQR count"),
+                     batch_rows.groupby(key).size().rename("Batches")], axis=1, sort=True)
+    out = out[out["Batches"] > 0].fillna(0)
+    return out["PQR count"] / out["Batches"]
+
+
+def metric_by_batch_date(batch_rows: pd.DataFrame,
+                         complaint_rows: pd.DataFrame | None = None) -> pd.Series:
+    """Metric per production date, using complaints tied to batches made on that date."""
+    if complaint_rows is None:
+        complaint_rows = complaints
+    linked = complaint_rows[complaint_rows["Batch_Number"].isin(batch_rows["Batch_Number"])].merge(
+        batch_rows[["Batch_Number", "Production_Date"]], on="Batch_Number", how="left"
+    )
+    out = metric_by(linked, batch_rows, "Production_Date")
+    out = out[out.index.isin(linked["Production_Date"])]
+    out.index = out.index.strftime("%Y-%m-%d")
+    return out
+
+
+def top_worst(values: pd.Series, label: str) -> pd.DataFrame:
+    out = values.sort_values(ascending=False).head(10).rename("Value")
+    out.index.name = label
+    return out.reset_index()
+
+
+def change_by(key: str, label: str) -> pd.DataFrame:
+    current = metric_by(month_complaints, month_batches, key)
+    prior = metric_by(in_month(complaints, "Date", previous_period),
+                      in_month(batches, "Production_Date", previous_period), key)
+    change = pd.concat([current, prior], axis=1, keys=["current", "prior"])
+    # Missing rate means no batches (undefined); missing count/settlement means zero.
+    change = change.dropna() if metric == "PQR rate" else change.fillna(0)
+    change = change["current"] - change["prior"]
+    return top_worst(change[change > 0], label)
+
+
+def worst_chart(frame: pd.DataFrame, label_column: str, value_label: str) -> None:
+    if frame.empty:
+        st.info("Nothing to show.")
+        return
+    text_format = {"PQR count": "%{x:,.0f}", "Settlement total": "$%{x:,.2f}"}.get(
+        metric, "%{x:.3f}")
+    fig = px.bar(frame, x="Value", y=label_column, orientation="h",
+                 color="Value", color_continuous_scale="Reds",
+                 labels={"Value": value_label})
+    fig.update_traces(texttemplate=text_format, textposition="outside", cliponaxis=False,
+                      hovertemplate=f"%{{y}}<br>{value_label}: {text_format}<extra></extra>")
+    fig.update_layout(height=420, coloraxis_showscale=False, margin=dict(t=10, r=60),
+                      yaxis=dict(type="category", autorange="reversed", title=None))
+    st.plotly_chart(fig, use_container_width=True)
+
 
 if focus is None:
     pass
+elif focus.startswith("year:"):
+    choice = focus.split(":", 1)[1]
+    year_complaints = in_year(complaints, "Date", current_year)
+    year_batches = in_year(batches, "Production_Date", current_year)
+    st.markdown(f"**{choice} by {metric} · {current_year}**")
+    if choice == "Top worst REX":
+        worst_chart(top_worst(metric_by(year_complaints, year_batches, "REX_Number"), "REX"),
+                    "REX", metric)
+    elif choice == "Top worst batch date":
+        worst_chart(top_worst(metric_by_batch_date(year_batches), "Batch date"),
+                    "Batch date", metric)
+    else:
+        worst_chart(top_worst(metric_by(year_complaints, year_batches, "Product_Line"),
+                              "Product family"), "Product family", metric)
+elif focus.startswith("month:"):
+    choice = focus.split(":", 1)[1]
+    change_label = f"{metric} change vs {previous_period_label}"
+    st.markdown(f"**{choice} · {current_period_label}**")
+    if choice == "Top worst REX":
+        st.caption(f"Largest {metric} increase vs {previous_period_label}")
+        worst_chart(change_by("REX_Number", "REX"), "REX", change_label)
+    elif choice == "Top worst batch date":
+        st.caption(f"Highest {metric} by batch date · complaints received in "
+                   f"{current_period_label}")
+        worst_chart(top_worst(metric_by_batch_date(batches, month_complaints), "Batch date"),
+                    "Batch date", metric)
+    else:
+        st.caption(f"Largest {metric} increase vs {previous_period_label}")
+        worst_chart(change_by("Product_Line", "Product family"), "Product family", change_label)
 elif focus == "year":
     if metric == "PQR count":
         year_metric = complaints.groupby("Year").size().rename("Value").reset_index()
@@ -249,13 +342,18 @@ elif focus == "year":
         value_label = "Settlement total"
         text_format = "$%{text:,.2f}"
 
-    year_fig = px.bar(year_metric, x="Year", y="Value", text="Value",
-                      title=f"{metric} by year", labels={"Value": value_label})
-    year_fig.update_traces(texttemplate=text_format, textposition="outside")
+    if metric == "PQR rate":
+        year_fig = px.line(year_metric, x="Year", y="Value", text="Value", markers=True,
+                           title=f"{metric} by year", labels={"Value": value_label})
+        year_fig.update_traces(texttemplate=text_format, textposition="top center")
+    else:
+        year_fig = px.bar(year_metric, x="Year", y="Value", text="Value",
+                          title=f"{metric} by year", labels={"Value": value_label})
+        year_fig.update_traces(texttemplate=text_format, textposition="outside")
     year_fig.update_layout(height=380, xaxis=dict(type="category"))
     st.plotly_chart(year_fig, use_container_width=True)
 elif focus == "month":
-    scope_years = [2025]
+    scope_years = years
     scoped_complaints = complaints[complaints["Year"].isin(scope_years)].copy()
     scoped_batches = batches[batches["Year"].isin(scope_years)].copy()
     scoped_complaints["Month"] = scoped_complaints["Date"].dt.month
@@ -288,12 +386,12 @@ elif focus == "month":
     monthly_count = (monthly_count.merge(monthly_grid, on=["Year", "Month"], how="right")
                      .merge(month_names, on="Month", how="left"))
     monthly_count["Value"] = monthly_count["Value"].fillna(0)
+    monthly_count["Year"] = monthly_count["Year"].astype(str)
 
-    count_fig = px.line(monthly_count, x="Month name", y="Value", color="Year",
+    count_fig = px.line(monthly_count, x="Month name", y="Value", color="Year", text="Value",
                         markers=True, category_orders={"Month name": month_order},
                         title=f"{metric} by month")
-    count_fig.update_traces(text=monthly_count["Value"], texttemplate=text_format,
-                            textposition="top center")
+    count_fig.update_traces(texttemplate=text_format, textposition="top center")
     count_fig.update_layout(height=400, xaxis_title="Month", yaxis_title=value_label)
     st.plotly_chart(count_fig, use_container_width=True)
 
@@ -340,15 +438,15 @@ else:
                 }, title=f"PQR count by reason · {previous_period_label} and {current_period_label}",
                 labels={"Value": reason_value_label},
             )
-        elif metric == "Settlement total":
-            reason_contribution = (month_complaints.groupby("Reason")["Settlement_Total"]
-                                   .sum().rename("Value").reset_index())
-            reason_value_label = "Settlement total"
-            reason_text_format = "$%{text:,.2f}"
         else:
-            reason_contribution = (month_complaints.groupby("Reason").size()
-                                   .rename("Value").reset_index())
-            if metric == "PQR rate":
+            if metric == "Settlement total":
+                reason_contribution = (month_complaints.groupby("Reason")["Settlement_Total"]
+                                       .sum().rename("Value").reset_index())
+                reason_value_label = "Settlement total"
+                reason_text_format = "$%{text:,.2f}"
+            else:
+                reason_contribution = (month_complaints.groupby("Reason").size()
+                                       .rename("Value").reset_index())
                 reason_contribution["Value"] = (
                     reason_contribution["Value"] / month_batch_count if month_batch_count else 0
                 )

@@ -481,8 +481,9 @@ def select_analysis_section(section: str) -> None:
 
 with action_columns[0]:
     st.button(
-        "Hide PQR trends explorer" if st.session_state["active_analysis_section"] == "explore"
-        else "Explore PQR trends by REX, product, or batch date",
+        "Hide explore PQR trends by REX, product, or batch date and explore complaint stats "
+        "and comments" if st.session_state["active_analysis_section"] == "explore"
+        else "Explore PQR trends by REX, product, or batch date and explore complaint stats and comments",
         key="explore_analysis_section",
         use_container_width=True,
         type="primary" if st.session_state["active_analysis_section"] == "explore"
@@ -492,8 +493,8 @@ with action_columns[0]:
     )
 with action_columns[1]:
     st.button(
-        "Hide PQR comparison/comments" if st.session_state["active_analysis_section"] == "compare"
-        else "Compare PQR trends and review complaint stats and comments",
+        "Hide compare" if st.session_state["active_analysis_section"] == "compare"
+        else "Compare",
         key="compare_analysis_section",
         use_container_width=True,
         type="primary" if st.session_state["active_analysis_section"] == "compare"

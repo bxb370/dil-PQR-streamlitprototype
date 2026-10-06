@@ -45,6 +45,20 @@ CATEGORY_BY_REASON = {
 
 st.set_page_config(page_title="PQR Dashboard", page_icon="🎨", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    .stAppViewContainer { background: #ffffff; }
+    .st-key-rex-year-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-rex-increase-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-rex-compare-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-rex-stats-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-rex-comments-panel { background: #ffffff; border-color: #d1d5db; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 @st.cache_data
 def load_data(complaints_mtime: float = 0):
@@ -95,7 +109,21 @@ if "Settlement_Total" not in complaints:
     ticket_numbers = complaints["Ticket_ID"].str.rsplit("-", n=1).str[-1].astype(int)
     complaints["Settlement_Total"] = (25 + (ticket_numbers * 7919 % 497500) / 100).round(2)
 
-st.title("Paint Quality Report (PQR) Dashboard")
+dashboard_tab, rex_tab, product_tab, batch_date_tab = st.tabs([
+    "Overview", "REX view", "Product view", "Batch date view"
+])
+
+with rex_tab:
+    st.subheader("REX view")
+
+with product_tab:
+    st.subheader("Product view")
+
+with batch_date_tab:
+    st.subheader("Batch date view")
+
+dashboard_tab.__enter__()
+st.title("PQR Overview")
 
 complaints["Year"] = complaints["Date"].dt.year
 batches["Year"] = batches["Production_Date"].dt.year
@@ -173,9 +201,6 @@ else:
         prior_month_complaints[prior_month_complaints["Reason"] == top_reason],
         in_month(batches, "Production_Date", previous_period),
     )
-
-st.subheader("PQR overview")
-st.caption("Select a card to drive the charts below.")
 
 month_names = pd.DataFrame({
     "Month": range(1, 13),
@@ -275,12 +300,14 @@ def change_by(key: str, label: str) -> pd.DataFrame:
     return top_worst(change[change > 0], label)
 
 
-def worst_chart(frame: pd.DataFrame, label_column: str, value_label: str) -> None:
+def worst_chart(frame: pd.DataFrame, label_column: str, value_label: str,
+                chart_metric: str | None = None) -> None:
     if frame.empty:
         st.info("Nothing to show.")
         return
+    chart_metric = chart_metric or metric
     text_format = {"PQR count": "%{x:,.0f}", "Settlement total": "$%{x:,.2f}"}.get(
-        metric, "%{x:.3f}")
+        chart_metric, "%{x:.3f}")
     fig = px.bar(frame, x="Value", y=label_column, orientation="h",
                  color="Value", color_continuous_scale="Reds",
                  labels={"Value": value_label})
@@ -289,6 +316,255 @@ def worst_chart(frame: pd.DataFrame, label_column: str, value_label: str) -> Non
     fig.update_layout(height=420, coloraxis_showscale=False, margin=dict(t=10, r=60),
                       yaxis=dict(type="category", autorange="reversed", title=None))
     st.plotly_chart(fig, use_container_width=True)
+
+
+def pqr_rate_by(complaint_rows: pd.DataFrame, batch_rows: pd.DataFrame,
+                key: str) -> pd.Series:
+    counts = complaint_rows.groupby(key).size().rename("Complaints")
+    batch_counts = batch_rows.groupby(key).size().rename("Batches")
+    rates = pd.concat([counts, batch_counts], axis=1).fillna(0)
+    rates = rates[rates["Batches"] > 0]
+    return rates["Complaints"] / rates["Batches"]
+
+
+def rex_monthly_rates(rex_numbers: list[str]) -> pd.DataFrame:
+    year_complaints = in_year(complaints, "Date", current_year)
+    year_batches = in_year(batches, "Production_Date", current_year)
+    periods = pd.period_range(f"{current_year}-01", f"{current_year}-12", freq="M")
+    rows = []
+    for rex_number in rex_numbers:
+        rex_complaints = year_complaints[year_complaints["REX_Number"] == rex_number]
+        rex_batches = year_batches[year_batches["REX_Number"] == rex_number]
+        complaint_counts = rex_complaints.groupby(
+            rex_complaints["Date"].dt.to_period("M")
+        ).size()
+        batch_counts = rex_batches.groupby(
+            rex_batches["Production_Date"].dt.to_period("M")
+        ).size()
+        values = pd.concat([complaint_counts.rename("Complaints"),
+                            batch_counts.rename("Batches")], axis=1).reindex(periods).fillna(0)
+        values["PQR rate"] = values["Complaints"].div(values["Batches"].replace(0, pd.NA)).fillna(0)
+        values["Period"] = values.index.astype(str)
+        values["REX"] = rex_number
+        rows.append(values[["Period", "REX", "PQR rate"]])
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(
+        columns=["Period", "REX", "PQR rate"]
+    )
+
+
+def render_rex_rate_trend(rex_numbers: list[str], title: str) -> None:
+    trend = rex_monthly_rates(rex_numbers)
+    if trend.empty:
+        st.info("Nothing to show.")
+        return
+    fig = px.line(trend, x="Period", y="PQR rate", color="REX", markers=True,
+                  title=title, labels={"Period": "Month"})
+    fig.update_traces(hovertemplate="%{fullData.name}<br>PQR rate: %{y:.3f}<extra></extra>")
+    fig.update_layout(height=420, xaxis_title="Month", yaxis_title="PQR rate")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+with rex_tab:
+    with st.container(border=True, key="rex-year-panel"):
+        st.subheader(f"Highest PQR rate REXs · {current_year}")
+        current_year_complaints = in_year(complaints, "Date", current_year)
+        current_year_batches = in_year(batches, "Production_Date", current_year)
+        current_year_rex = top_worst(
+            pqr_rate_by(current_year_complaints, current_year_batches, "REX_Number"), "REX"
+        )
+        current_year_rex["REX"] = current_year_rex["REX"].astype(str)
+        ranking_column, trend_column = st.columns(2)
+        with ranking_column:
+            worst_chart(current_year_rex, "REX", "PQR rate", chart_metric="PQR rate")
+        with trend_column:
+            render_rex_rate_trend(
+                current_year_rex["REX"].tolist(),
+                f"PQR rate by month · highest PQR rate REXs · {current_year}",
+            )
+
+    with st.container(border=True, key="rex-increase-panel"):
+        st.subheader(
+            f"Highest PQR rate increases by REX · {previous_period_label} to {current_period_label}"
+        )
+        current_rex_rates = pqr_rate_by(month_complaints, month_batches, "REX_Number")
+        prior_rex_rates = pqr_rate_by(
+            in_month(complaints, "Date", previous_period),
+            in_month(batches, "Production_Date", previous_period),
+            "REX_Number",
+        )
+        rex_rate_change = pd.concat(
+            [current_rex_rates.rename("Current"), prior_rex_rates.rename("Previous")], axis=1
+        ).dropna()
+        rex_rate_change["Value"] = rex_rate_change["Current"] - rex_rate_change["Previous"]
+        monthly_rex = rex_rate_change[rex_rate_change["Value"] > 0].sort_values(
+            "Value", ascending=False
+        ).head(6).reset_index(names="REX")
+        monthly_rex["REX"] = monthly_rex["REX"].astype(str)
+        increase_column, monthly_trend_column = st.columns(2)
+        with increase_column:
+            worst_chart(monthly_rex[["REX", "Value"]], "REX", "PQR rate increase",
+                        chart_metric="PQR rate")
+        with monthly_trend_column:
+            render_rex_rate_trend(
+                monthly_rex["REX"].tolist(),
+                f"PQR rate by month · greatest increases from {previous_period_label} to {current_period_label}",
+            )
+
+    compare_panel = st.container(border=True, key="rex-compare-panel")
+    compare_panel.__enter__()
+    st.subheader("Compare PQR trends")
+    comparison_start = min(complaints["Date"].min(), batches["Production_Date"].min())
+    comparison_end = max(complaints["Date"].max(), batches["Production_Date"].max())
+    rex_options = ["None"] + sorted(complaints["REX_Number"].dropna().unique().tolist())
+    rex_comparison_columns = st.columns(2)
+    rex_comparisons = []
+    for selection_number, column in enumerate(rex_comparison_columns, start=1):
+        with column:
+            st.markdown(f"#### Selection {selection_number}")
+            selected_rex = st.selectbox(
+                "REX", rex_options, key=f"rex_comparison_value_{selection_number}"
+            )
+            selected_dates = st.slider(
+                "Time frame",
+                min_value=comparison_start.date(),
+                max_value=comparison_end.date(),
+                value=(comparison_start.date(), comparison_end.date()),
+                format="MMM YYYY",
+                key=f"rex_comparison_dates_{selection_number}",
+            )
+            rex_comparisons.append((selected_rex, selected_dates))
+
+    rex_comparison_metric = st.selectbox(
+        "Comparison metric",
+        ["PQR count", "PQR rate", "Settlement total"],
+        key="rex_comparison_metric",
+    )
+    rex_comparison_frames = []
+    for selection_number, (selected_rex, selected_dates) in enumerate(rex_comparisons, start=1):
+        if selected_rex == "None":
+            continue
+        complaint_scope = complaints[
+            (complaints["REX_Number"] == selected_rex)
+            & (complaints["Date"] >= pd.Timestamp(selected_dates[0]))
+            & (complaints["Date"] < pd.Timestamp(selected_dates[1]) + pd.offsets.MonthBegin(1))
+        ].copy()
+        batch_scope = batches[
+            (batches["REX_Number"] == selected_rex)
+            & (batches["Production_Date"] >= pd.Timestamp(selected_dates[0]))
+            & (batches["Production_Date"] < pd.Timestamp(selected_dates[1]) + pd.offsets.MonthBegin(1))
+        ].copy()
+        comparison_periods = pd.DataFrame({
+            "Period": pd.period_range(selected_dates[0], selected_dates[1], freq="M").astype(str)
+        })
+        if rex_comparison_metric == "Settlement total":
+            values = complaint_scope.groupby(complaint_scope["Date"].dt.to_period("M").astype(str))["Settlement_Total"].sum()
+        else:
+            complaint_counts = complaint_scope.groupby(
+                complaint_scope["Date"].dt.to_period("M").astype(str)
+            ).size()
+            if rex_comparison_metric == "PQR rate":
+                batch_counts = batch_scope.groupby(
+                    batch_scope["Production_Date"].dt.to_period("M").astype(str)
+                ).size()
+                values = complaint_counts.div(batch_counts.replace(0, pd.NA)).fillna(0)
+            else:
+                values = complaint_counts
+        frame = comparison_periods.copy()
+        frame["Value"] = frame["Period"].map(values).fillna(0)
+        frame["Selection"] = f"Selection {selection_number}: {selected_rex}"
+        rex_comparison_frames.append(frame)
+
+    if rex_comparison_frames:
+        rex_comparison_trend = pd.concat(rex_comparison_frames, ignore_index=True)
+        comparison_fig = px.line(
+            rex_comparison_trend, x="Period", y="Value", color="Selection", markers=True,
+            title=f"{rex_comparison_metric} by month",
+            labels={"Value": rex_comparison_metric, "Period": "Month"},
+        )
+        comparison_fig.update_layout(height=420, xaxis_title="Month", yaxis_title=rex_comparison_metric)
+        st.plotly_chart(comparison_fig, use_container_width=True)
+        rex_comparison_table = rex_comparison_trend.pivot_table(
+            index="Selection", columns="Period", values="Value", aggfunc="sum", fill_value=0
+        ).sort_index(axis=1)
+        rex_comparison_table["Total"] = rex_comparison_table.sum(axis=1)
+        st.dataframe(rex_comparison_table.reset_index(), use_container_width=True, hide_index=True)
+    else:
+        st.info("Choose at least one REX to compare.")
+
+    compare_panel.__exit__(None, None, None)
+
+    stats_panel = st.container(border=True, key="rex-stats-panel")
+    stats_panel.__enter__()
+    st.subheader("Complaint stats comparison")
+    reason_frames = []
+    detail_frames = []
+    for selection_number, (selected_rex, selected_dates) in enumerate(
+            rex_comparisons, start=1):
+        if selected_rex == "None":
+            continue
+        complaint_scope = complaints[
+            (complaints["REX_Number"] == selected_rex)
+            & (complaints["Date"] >= pd.Timestamp(selected_dates[0]))
+            & (complaints["Date"] < pd.Timestamp(selected_dates[1])
+               + pd.offsets.MonthBegin(1))
+        ].copy()
+        reason_counts = complaint_scope.groupby("Reason").size().rename(
+            "Complaints"
+        ).reset_index()
+        if rex_comparison_metric == "Settlement total":
+            reason_counts["Value"] = complaint_scope.groupby("Reason")["Settlement_Total"].sum().reindex(
+                reason_counts["Reason"]
+            ).to_numpy()
+        elif rex_comparison_metric == "PQR rate":
+            batch_count = len(batches[
+                (batches["REX_Number"] == selected_rex)
+                & (batches["Production_Date"] >= pd.Timestamp(selected_dates[0]))
+                & (batches["Production_Date"] < pd.Timestamp(selected_dates[1])
+                   + pd.offsets.MonthBegin(1))
+            ])
+            reason_counts["Value"] = reason_counts["Complaints"].div(batch_count).fillna(0)
+        else:
+            reason_counts["Value"] = reason_counts["Complaints"]
+        reason_counts["Selection"] = f"Selection {selection_number}: {selected_rex}"
+        reason_frames.append(reason_counts)
+        detail_frames.append((f"Selection {selection_number}: {selected_rex}", complaint_scope))
+
+    if reason_frames:
+        reason_comparison = pd.concat(reason_frames, ignore_index=True)
+        reason_order = (reason_comparison.groupby("Reason")["Value"].sum()
+                        .sort_values(ascending=False).index.tolist())
+        reason_fig = px.bar(
+            reason_comparison, x="Reason", y="Value", color="Selection", barmode="group",
+            title=f"{rex_comparison_metric} by complaint reason",
+            labels={"Value": rex_comparison_metric},
+            category_orders={"Reason": reason_order},
+        )
+        reason_fig.update_layout(height=500, xaxis_tickangle=-45)
+        st.plotly_chart(reason_fig, use_container_width=True)
+    else:
+        st.info("Choose a REX above to view complaint statistics.")
+
+    stats_panel.__exit__(None, None, None)
+    comments_panel = st.container(border=True, key="rex-comments-panel")
+    comments_panel.__enter__()
+    st.subheader("Complaint comments")
+    if detail_frames:
+        detail_columns = st.columns(2)
+        for column, (label, detail) in zip(detail_columns, detail_frames):
+            with column:
+                st.markdown(f"#### {label}")
+                st.caption(f"{len(detail):,} complaints")
+                st.dataframe(
+                    detail.sort_values("Date", ascending=False)[[
+                        "Ticket_ID", "Date", "Time", "Comments", "Reason", "Settlement_Total",
+                        "Batch_Number", "Product_Line", "Plant", "Region", "Channel",
+                    ]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+    else:
+        st.info("Choose a REX above to view complaint comments.")
+    comments_panel.__exit__(None, None, None)
 
 
 if focus is None:

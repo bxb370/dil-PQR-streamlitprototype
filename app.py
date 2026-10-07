@@ -54,6 +54,11 @@ st.markdown(
     .st-key-rex-compare-panel { background: #ffffff; border-color: #d1d5db; }
     .st-key-rex-stats-panel { background: #ffffff; border-color: #d1d5db; }
     .st-key-rex-comments-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-year-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-increase-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-compare-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-stats-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-comments-panel { background: #ffffff; border-color: #d1d5db; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -109,8 +114,80 @@ if "Settlement_Total" not in complaints:
     ticket_numbers = complaints["Ticket_ID"].str.rsplit("-", n=1).str[-1].astype(int)
     complaints["Settlement_Total"] = (25 + (ticket_numbers * 7919 % 497500) / 100).round(2)
 
-dashboard_tab, rex_tab, product_tab, batch_date_tab = st.tabs([
-    "Overview", "REX view", "Product view", "Batch date view"
+channel_to_market = {
+    "Direct/Commercial": "PSG",
+    "Big Box": "Retail",
+    "Company Store": "Retail",
+    "Dealer": "Retail",
+}
+region_to_division = {
+    "West": "CAN",
+    "Northeast": "EAD",
+    "Midwest": "MWD",
+    "Southeast": "SED",
+    "Southwest": "SWD",
+}
+complaints["Market"] = complaints["Channel"].map(channel_to_market)
+complaints["Division"] = complaints["Region"].map(region_to_division)
+batch_dimensions = (complaints.groupby("Batch_Number")
+                .agg(Market=("Market", lambda values: values.mode().iat[0]),
+                    Division=("Division", lambda values: values.mode().iat[0]))
+                .reset_index())
+batches = batches.drop(columns=["Market", "Division"], errors="ignore").merge(
+    batch_dimensions, on="Batch_Number", how="left"
+)
+
+market_options = ["All", "PSG", "Retail"]
+division_options = ["All", "CAN", "EAD", "MWD", "SED", "SWD"]
+st.session_state.setdefault("selected_market", "All")
+st.session_state.setdefault("selected_division", "All")
+
+
+def sync_page_filters(page_key: str) -> None:
+    st.session_state["selected_market"] = st.session_state[f"{page_key}_market"]
+    st.session_state["selected_division"] = st.session_state[f"{page_key}_division"]
+    st.rerun()
+
+
+def render_page_filters(page_key: str) -> None:
+    filter_columns = st.columns(2)
+    filter_columns[0].selectbox(
+        "Market",
+        market_options,
+        index=market_options.index(st.session_state["selected_market"]),
+        key=f"{page_key}_market",
+        on_change=sync_page_filters,
+        args=(page_key,),
+    )
+    filter_columns[1].selectbox(
+        "Division",
+        division_options,
+        index=division_options.index(st.session_state["selected_division"]),
+        key=f"{page_key}_division",
+        on_change=sync_page_filters,
+        args=(page_key,),
+    )
+
+
+selected_market = st.session_state["selected_market"]
+selected_division = st.session_state["selected_division"]
+
+with st.sidebar:
+    st.header("Filters")
+    render_page_filters("main")
+
+if selected_market != "All":
+    complaints = complaints[complaints["Market"] == selected_market]
+    batches = batches[batches["Market"] == selected_market]
+if selected_division != "All":
+    complaints = complaints[complaints["Division"] == selected_division]
+    batches = batches[batches["Division"] == selected_division]
+if complaints.empty or batches.empty:
+    st.warning("No data matches the selected filters.")
+    st.stop()
+
+dashboard_tab, rex_tab, product_tab, batch_date_tab, all_trends_tab = st.tabs([
+    "Overview", "REX view", "Product view", "Batch date view", "All trends explorer"
 ])
 
 with rex_tab:
@@ -124,16 +201,15 @@ with batch_date_tab:
 
 dashboard_tab.__enter__()
 st.title("PQR Overview")
-
-complaints["Year"] = complaints["Date"].dt.year
-batches["Year"] = batches["Production_Date"].dt.year
-years = sorted(set(complaints["Year"]).union(batches["Year"]))
-
 metric = st.selectbox(
     "Metric",
     ["PQR count", "PQR rate", "Settlement total"],
     key="overview_metric",
 )
+
+complaints["Year"] = complaints["Date"].dt.year
+batches["Year"] = batches["Production_Date"].dt.year
+years = sorted(set(complaints["Year"]).union(batches["Year"]))
 
 metric_formats = {
     "PQR count": lambda value: f"{value:,.0f}",
@@ -209,54 +285,172 @@ month_names = pd.DataFrame({
 })
 month_order = month_names["Month name"].tolist()
 
-focus = st.session_state.get("focus_card")
 card_columns = st.columns(3)
 
 
-def select_card(key: str) -> None:
-    st.session_state["focus_card"] = None if st.session_state.get("focus_card") == key else key
-
-
-def render_card(column, key: str, caption: str, label: str, value: str,
-                delta: str | None, button_label: str, extra_buttons: bool = False) -> None:
+def render_card(column, caption: str, label: str, value: str, delta: str | None) -> None:
     with column:
         box = st.container(border=True)
         box.markdown(f"#### {caption}")
         box.metric(label, value, delta=delta, delta_color="inverse")
-        buttons = [(key, button_label)]
-        if extra_buttons:
-            buttons += [(f"{key}:{option}", option) for option in WORST_OPTIONS]
-        for button_key, text in buttons:
-            selected = focus == button_key
-            box.button(f"Hide {text.lower().removeprefix('show ')}" if selected else text,
-                       key=f"focus_{button_key}", use_container_width=True,
-                       type="primary" if selected else "secondary",
-                       on_click=select_card, args=(button_key,))
-
-
-WORST_OPTIONS = ["Top worst REX", "Top worst batch date", "Top worst product family"]
 
 render_card(
-    card_columns[0], "year",
+    card_columns[0],
     f"Year to date · {current_year}", metric, format_value(year_value),
     delta_text(year_value, prior_year_value, str(previous_year)),
-    "Show yearly trend chart", extra_buttons=True,
 )
 render_card(
-    card_columns[1], "month",
+    card_columns[1],
     f"Current month · {current_period_label}", metric, format_value(month_value),
     delta_text(month_value, prior_month_value, previous_period_label),
-    "Show monthly trend chart", extra_buttons=True,
 )
 render_card(
-    card_columns[2], "reason",
+    card_columns[2],
     f"Top complaint this month · {current_period_label}",
     top_reason or "No complaints",
     format_value(top_reason_value) if top_reason else "—",
     delta_text(top_reason_value, prior_top_reason_value, previous_period_label)
     if top_reason else None,
-    "Show complaint trends chart",
 )
+
+
+def render_overview_trends() -> None:
+    st.subheader("Yearly trend")
+    if metric == "PQR count":
+        year_metric = complaints.groupby("Year").size().rename("Value").reset_index()
+        value_label = "PQR count"
+        text_format = "%{text:,}"
+    elif metric == "PQR rate":
+        year_metric = (complaints.groupby("Year").size().rename("PQR count")
+                       .to_frame().join(batches.groupby("Year").size().rename("Batches"))
+                       .fillna(0).reset_index())
+        year_metric["Value"] = year_metric["PQR count"].div(
+            year_metric["Batches"].replace(0, pd.NA)
+        ).fillna(0)
+        value_label = "PQR rate"
+        text_format = "%{text:.3f}"
+    else:
+        year_metric = (complaints.groupby("Year")["Settlement_Total"]
+                       .sum().rename("Value").reset_index())
+        value_label = "Settlement total"
+        text_format = "$%{text:,.2f}"
+
+    if metric == "PQR rate":
+        year_fig = px.line(year_metric, x="Year", y="Value", text="Value", markers=True,
+                           title=f"{metric} by year", labels={"Value": value_label})
+        year_fig.update_traces(texttemplate=text_format, textposition="top center")
+    else:
+        year_fig = px.bar(year_metric, x="Year", y="Value", text="Value",
+                          title=f"{metric} by year", labels={"Value": value_label})
+        year_fig.update_traces(texttemplate=text_format, textposition="outside")
+    year_fig.update_layout(height=380, xaxis=dict(type="category"))
+    st.plotly_chart(year_fig, use_container_width=True)
+
+    st.subheader("Monthly trend")
+    scoped_complaints = complaints.copy()
+    scoped_batches = batches.copy()
+    scoped_complaints["Month"] = scoped_complaints["Date"].dt.month
+    scoped_batches["Month"] = scoped_batches["Production_Date"].dt.month
+    monthly_grid = pd.MultiIndex.from_product(
+        [years, range(1, 13)], names=["Year", "Month"]
+    ).to_frame(index=False)
+    if metric == "PQR count":
+        monthly_count = (scoped_complaints.groupby(["Year", "Month"]).size()
+                         .rename("Value").reset_index())
+        value_label = "PQR count"
+        text_format = "%{text:,}"
+    elif metric == "PQR rate":
+        monthly_count = (scoped_complaints.groupby(["Year", "Month"]).size()
+                         .rename("PQR count").to_frame()
+                         .join(scoped_batches.groupby(["Year", "Month"]).size().rename("Batches"))
+                         .fillna(0).reset_index())
+        monthly_count["Value"] = monthly_count["PQR count"].div(
+            monthly_count["Batches"].replace(0, pd.NA)
+        ).fillna(0)
+        value_label = "PQR rate"
+        text_format = "%{text:.3f}"
+    else:
+        monthly_count = (scoped_complaints.groupby(["Year", "Month"])["Settlement_Total"]
+                         .sum().rename("Value").reset_index())
+        value_label = "Settlement total"
+        text_format = "$%{text:,.2f}"
+    monthly_count = (monthly_count.merge(monthly_grid, on=["Year", "Month"], how="right")
+                     .merge(month_names, on="Month", how="left"))
+    monthly_count["Value"] = monthly_count["Value"].fillna(0)
+    monthly_count["Year"] = monthly_count["Year"].astype(str)
+    monthly_fig = px.line(
+        monthly_count, x="Month name", y="Value", color="Year", text="Value",
+        markers=True, category_orders={"Month name": month_order},
+        title=f"{metric} by month", labels={"Value": value_label},
+    )
+    monthly_fig.update_traces(texttemplate=text_format, textposition="top center")
+    monthly_fig.update_layout(height=400, xaxis_title="Month", yaxis_title=value_label)
+    st.plotly_chart(monthly_fig, use_container_width=True)
+    monthly_table = (monthly_count.pivot(index="Year", columns="Month name", values="Value")
+                     .reindex(columns=month_order, fill_value=0).fillna(0))
+    monthly_table["Total"] = monthly_table.sum(axis=1)
+    monthly_table = monthly_table.reset_index()
+    numeric_columns = monthly_table.columns[1:]
+    monthly_table[numeric_columns] = monthly_table[numeric_columns].map(
+        lambda value: f"${value:,.2f}" if metric == "Settlement total"
+        else f"{value:,.3f}" if metric == "PQR rate"
+        else f"{value:,.0f}"
+    )
+    st.dataframe(monthly_table, use_container_width=True, hide_index=True)
+
+    st.subheader("Complaint trend")
+    if month_complaints.empty:
+        st.info(f"No complaints recorded for {current_period_label}.")
+        return
+    reason_scope = complaints[complaints["Year"] == 2025].copy()
+    reason_scope["Month"] = reason_scope["Date"].dt.to_period("M").astype(str)
+    reason_order = sorted(reason_scope["Month"].unique())
+    if metric == "Settlement total":
+        reason_contribution = (reason_scope.groupby(["Reason", "Month"])["Settlement_Total"]
+                               .sum().rename("Value").reset_index())
+        reason_label = "Settlement total"
+    else:
+        reason_contribution = (reason_scope.groupby(["Reason", "Month"]).size()
+                               .rename("PQR count").reset_index())
+        if metric == "PQR rate":
+            reason_batches = batches[batches["Year"] == 2025].copy()
+            reason_batches["Month"] = reason_batches["Production_Date"].dt.to_period("M").astype(str)
+            batch_counts = reason_batches.groupby("Month").size().rename("Batches")
+            reason_contribution = reason_contribution.join(batch_counts, on="Month")
+            reason_contribution["Value"] = reason_contribution["PQR count"].div(
+                reason_contribution["Batches"].replace(0, pd.NA)
+            ).fillna(0)
+            reason_label = "PQR rate"
+        else:
+            reason_contribution["Value"] = reason_contribution["PQR count"]
+            reason_label = "PQR count"
+    complaint_fig = px.line(
+        reason_contribution, x="Month", y="Value", color="Reason", markers=True,
+        category_orders={"Month": reason_order},
+        title=f"{metric} by reason over 2025",
+        labels={"Value": reason_label},
+    )
+    complaint_fig.update_layout(height=500, coloraxis_showscale=False,
+                                yaxis_title=reason_label, xaxis=dict(tickangle=-45))
+    st.plotly_chart(complaint_fig, use_container_width=True)
+    complaint_table = (reason_contribution.pivot_table(
+        index="Reason", columns="Month", values="Value", aggfunc="sum", fill_value=0
+    ).reindex(columns=reason_order, fill_value=0))
+    complaint_table["Total"] = complaint_table.sum(axis=1)
+    complaint_table = complaint_table.sort_values("Total", ascending=False)
+    complaint_table = complaint_table.reset_index()
+    table_columns = complaint_table.columns[1:]
+    complaint_table[table_columns] = complaint_table[table_columns].map(
+        lambda value: f"${value:,.2f}" if metric == "Settlement total"
+        else f"{value:,.3f}" if metric == "PQR rate"
+        else f"{value:,.0f}"
+    )
+    st.dataframe(complaint_table, use_container_width=True, hide_index=True)
+
+
+render_overview_trends()
+
+focus = None
 
 def metric_by(complaint_rows: pd.DataFrame, batch_rows: pd.DataFrame, key: str) -> pd.Series:
     if metric == "PQR count":
@@ -358,6 +552,47 @@ def render_rex_rate_trend(rex_numbers: list[str], title: str) -> None:
         st.info("Nothing to show.")
         return
     fig = px.line(trend, x="Period", y="PQR rate", color="REX", markers=True,
+                  title=title, labels={"Period": "Month"})
+    fig.update_traces(hovertemplate="%{fullData.name}<br>PQR rate: %{y:.3f}<extra></extra>")
+    fig.update_layout(height=420, xaxis_title="Month", yaxis_title="PQR rate")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def product_monthly_rates(product_families: list[str]) -> pd.DataFrame:
+    year_complaints = in_year(complaints, "Date", current_year)
+    year_batches = in_year(batches, "Production_Date", current_year)
+    periods = pd.period_range(f"{current_year}-01", f"{current_year}-12", freq="M")
+    rows = []
+    for product_family in product_families:
+        product_complaints = year_complaints[
+            year_complaints["Product_Line"] == product_family
+        ]
+        product_batches = year_batches[year_batches["Product_Line"] == product_family]
+        complaint_counts = product_complaints.groupby(
+            product_complaints["Date"].dt.to_period("M")
+        ).size()
+        batch_counts = product_batches.groupby(
+            product_batches["Production_Date"].dt.to_period("M")
+        ).size()
+        values = pd.concat([complaint_counts.rename("Complaints"),
+                            batch_counts.rename("Batches")], axis=1).reindex(periods).fillna(0)
+        values["PQR rate"] = values["Complaints"].div(
+            values["Batches"].replace(0, pd.NA)
+        ).fillna(0)
+        values["Period"] = values.index.astype(str)
+        values["Product family"] = product_family
+        rows.append(values[["Period", "Product family", "PQR rate"]])
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(
+        columns=["Period", "Product family", "PQR rate"]
+    )
+
+
+def render_product_rate_trend(product_families: list[str], title: str) -> None:
+    trend = product_monthly_rates(product_families)
+    if trend.empty:
+        st.info("Nothing to show.")
+        return
+    fig = px.line(trend, x="Period", y="PQR rate", color="Product family", markers=True,
                   title=title, labels={"Period": "Month"})
     fig.update_traces(hovertemplate="%{fullData.name}<br>PQR rate: %{y:.3f}<extra></extra>")
     fig.update_layout(height=420, xaxis_title="Month", yaxis_title="PQR rate")
@@ -567,6 +802,224 @@ with rex_tab:
     comments_panel.__exit__(None, None, None)
 
 
+with product_tab:
+    with st.container(border=True, key="product-year-panel"):
+        st.subheader(f"PQR rate by product family · {current_year}")
+        current_year_complaints = in_year(complaints, "Date", current_year)
+        current_year_batches = in_year(batches, "Production_Date", current_year)
+        current_year_products = top_worst(
+            pqr_rate_by(current_year_complaints, current_year_batches, "Product_Line"),
+            "Product family",
+        )
+        current_year_products["Product family"] = current_year_products["Product family"].astype(str)
+        ranking_column, trend_column = st.columns(2)
+        with ranking_column:
+            worst_chart(current_year_products, "Product family", "PQR rate",
+                        chart_metric="PQR rate")
+        with trend_column:
+            render_product_rate_trend(
+                current_year_products["Product family"].tolist(),
+                f"PQR rate by month · product family · {current_year}",
+            )
+
+    with st.container(border=True, key="product-increase-panel"):
+        st.subheader(
+            "PQR rate increases by product family · "
+            f"{previous_period_label} to {current_period_label}"
+        )
+        current_product_rates = pqr_rate_by(month_complaints, month_batches, "Product_Line")
+        prior_product_rates = pqr_rate_by(
+            in_month(complaints, "Date", previous_period),
+            in_month(batches, "Production_Date", previous_period),
+            "Product_Line",
+        )
+        product_rate_change = pd.concat(
+            [current_product_rates.rename("Current"), prior_product_rates.rename("Previous")],
+            axis=1,
+        ).dropna()
+        product_rate_change["Value"] = (
+            product_rate_change["Current"] - product_rate_change["Previous"]
+        )
+        monthly_products = product_rate_change[product_rate_change["Value"] > 0].sort_values(
+            "Value", ascending=False
+        ).head(6).reset_index(names="Product family")
+        monthly_products["Product family"] = monthly_products["Product family"].astype(str)
+        increase_column, monthly_trend_column = st.columns(2)
+        with increase_column:
+            worst_chart(monthly_products[["Product family", "Value"]], "Product family",
+                        "PQR rate increase", chart_metric="PQR rate")
+        with monthly_trend_column:
+            render_product_rate_trend(
+                monthly_products["Product family"].tolist(),
+                "PQR rate by month · increases from "
+                f"{previous_period_label} to {current_period_label}",
+            )
+
+    product_compare_panel = st.container(border=True, key="product-compare-panel")
+    product_compare_panel.__enter__()
+    st.subheader("Compare PQR trends")
+    comparison_start = min(complaints["Date"].min(), batches["Production_Date"].min())
+    comparison_end = max(complaints["Date"].max(), batches["Production_Date"].max())
+    product_options = ["None"] + sorted(complaints["Product_Line"].dropna().unique().tolist())
+    product_comparison_columns = st.columns(2)
+    product_comparisons = []
+    for selection_number, column in enumerate(product_comparison_columns, start=1):
+        with column:
+            st.markdown(f"#### Selection {selection_number}")
+            selected_product = st.selectbox(
+                "Product family", product_options,
+                key=f"product_comparison_value_{selection_number}",
+            )
+            selected_dates = st.slider(
+                "Time frame",
+                min_value=comparison_start.date(),
+                max_value=comparison_end.date(),
+                value=(comparison_start.date(), comparison_end.date()),
+                format="MMM YYYY",
+                key=f"product_comparison_dates_{selection_number}",
+            )
+            product_comparisons.append((selected_product, selected_dates))
+
+    product_comparison_metric = st.selectbox(
+        "Comparison metric",
+        ["PQR count", "PQR rate", "Settlement total"],
+        key="product_comparison_metric",
+    )
+    product_comparison_frames = []
+    for selection_number, (selected_product, selected_dates) in enumerate(
+            product_comparisons, start=1):
+        if selected_product == "None":
+            continue
+        complaint_scope = complaints[
+            (complaints["Product_Line"] == selected_product)
+            & (complaints["Date"] >= pd.Timestamp(selected_dates[0]))
+            & (complaints["Date"] < pd.Timestamp(selected_dates[1]) + pd.offsets.MonthBegin(1))
+        ].copy()
+        batch_scope = batches[
+            (batches["Product_Line"] == selected_product)
+            & (batches["Production_Date"] >= pd.Timestamp(selected_dates[0]))
+            & (batches["Production_Date"] < pd.Timestamp(selected_dates[1])
+               + pd.offsets.MonthBegin(1))
+        ].copy()
+        comparison_periods = pd.DataFrame({
+            "Period": pd.period_range(selected_dates[0], selected_dates[1], freq="M").astype(str)
+        })
+        if product_comparison_metric == "Settlement total":
+            values = complaint_scope.groupby(
+                complaint_scope["Date"].dt.to_period("M").astype(str)
+            )["Settlement_Total"].sum()
+        else:
+            complaint_counts = complaint_scope.groupby(
+                complaint_scope["Date"].dt.to_period("M").astype(str)
+            ).size()
+            if product_comparison_metric == "PQR rate":
+                batch_counts = batch_scope.groupby(
+                    batch_scope["Production_Date"].dt.to_period("M").astype(str)
+                ).size()
+                values = complaint_counts.div(batch_counts.replace(0, pd.NA)).fillna(0)
+            else:
+                values = complaint_counts
+        frame = comparison_periods.copy()
+        frame["Value"] = frame["Period"].map(values).fillna(0)
+        frame["Selection"] = f"Selection {selection_number}: {selected_product}"
+        product_comparison_frames.append(frame)
+
+    if product_comparison_frames:
+        product_comparison_trend = pd.concat(product_comparison_frames, ignore_index=True)
+        comparison_fig = px.line(
+            product_comparison_trend, x="Period", y="Value", color="Selection", markers=True,
+            title=f"{product_comparison_metric} by month",
+            labels={"Value": product_comparison_metric, "Period": "Month"},
+        )
+        comparison_fig.update_layout(height=420, xaxis_title="Month",
+                                     yaxis_title=product_comparison_metric)
+        st.plotly_chart(comparison_fig, use_container_width=True)
+        product_comparison_table = product_comparison_trend.pivot_table(
+            index="Selection", columns="Period", values="Value", aggfunc="sum", fill_value=0
+        ).sort_index(axis=1)
+        product_comparison_table["Total"] = product_comparison_table.sum(axis=1)
+        st.dataframe(product_comparison_table.reset_index(), use_container_width=True,
+                     hide_index=True)
+    else:
+        st.info("Choose at least one product family to compare.")
+    product_compare_panel.__exit__(None, None, None)
+
+    product_stats_panel = st.container(border=True, key="product-stats-panel")
+    product_stats_panel.__enter__()
+    st.subheader("Complaint stats comparison")
+    product_reason_frames = []
+    product_detail_frames = []
+    for selection_number, (selected_product, selected_dates) in enumerate(
+            product_comparisons, start=1):
+        if selected_product == "None":
+            continue
+        complaint_scope = complaints[
+            (complaints["Product_Line"] == selected_product)
+            & (complaints["Date"] >= pd.Timestamp(selected_dates[0]))
+            & (complaints["Date"] < pd.Timestamp(selected_dates[1])
+               + pd.offsets.MonthBegin(1))
+        ].copy()
+        reason_counts = complaint_scope.groupby("Reason").size().rename(
+            "Complaints"
+        ).reset_index()
+        if product_comparison_metric == "Settlement total":
+            reason_counts["Value"] = complaint_scope.groupby("Reason")["Settlement_Total"].sum().reindex(
+                reason_counts["Reason"]
+            ).to_numpy()
+        elif product_comparison_metric == "PQR rate":
+            batch_count = len(batches[
+                (batches["Product_Line"] == selected_product)
+                & (batches["Production_Date"] >= pd.Timestamp(selected_dates[0]))
+                & (batches["Production_Date"] < pd.Timestamp(selected_dates[1])
+                   + pd.offsets.MonthBegin(1))
+            ])
+            reason_counts["Value"] = reason_counts["Complaints"].div(batch_count).fillna(0)
+        else:
+            reason_counts["Value"] = reason_counts["Complaints"]
+        reason_counts["Selection"] = f"Selection {selection_number}: {selected_product}"
+        product_reason_frames.append(reason_counts)
+        product_detail_frames.append(
+            (f"Selection {selection_number}: {selected_product}", complaint_scope)
+        )
+
+    if product_reason_frames:
+        product_reason_comparison = pd.concat(product_reason_frames, ignore_index=True)
+        product_reason_order = (product_reason_comparison.groupby("Reason")["Value"].sum()
+                                .sort_values(ascending=False).index.tolist())
+        reason_fig = px.bar(
+            product_reason_comparison, x="Reason", y="Value", color="Selection", barmode="group",
+            title=f"{product_comparison_metric} by complaint reason",
+            labels={"Value": product_comparison_metric},
+            category_orders={"Reason": product_reason_order},
+        )
+        reason_fig.update_layout(height=500, xaxis_tickangle=-45)
+        st.plotly_chart(reason_fig, use_container_width=True)
+    else:
+        st.info("Choose a product family above to view complaint statistics.")
+    product_stats_panel.__exit__(None, None, None)
+
+    product_comments_panel = st.container(border=True, key="product-comments-panel")
+    product_comments_panel.__enter__()
+    st.subheader("Complaint comments")
+    if product_detail_frames:
+        detail_columns = st.columns(2)
+        for column, (label, detail) in zip(detail_columns, product_detail_frames):
+            with column:
+                st.markdown(f"#### {label}")
+                st.caption(f"{len(detail):,} complaints")
+                st.dataframe(
+                    detail.sort_values("Date", ascending=False)[[
+                        "Ticket_ID", "Date", "Time", "Comments", "Reason", "Settlement_Total",
+                        "Batch_Number", "Product_Line", "Plant", "Region", "Channel",
+                    ]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+    else:
+        st.info("Choose a product family above to view complaint comments.")
+    product_comments_panel.__exit__(None, None, None)
+
+
 if focus is None:
     pass
 elif focus.startswith("year:"):
@@ -743,47 +1196,6 @@ else:
 if "active_analysis_section" not in st.session_state:
     st.session_state["active_analysis_section"] = None
 
-st.divider()
-st.subheader("Explore and compare")
-action_columns = st.columns(2)
-
-
-def select_analysis_section(section: str) -> None:
-    current_section = st.session_state.get("active_analysis_section")
-    st.session_state["active_analysis_section"] = (
-        None if current_section == section else section
-    )
-
-
-with action_columns[0]:
-    st.button(
-        "Hide explore PQR trends by REX, product, or batch date and explore complaint stats "
-        "and comments" if st.session_state["active_analysis_section"] == "explore"
-        else "Explore PQR trends by REX, product, or batch date and explore complaint stats and comments",
-        key="explore_analysis_section",
-        use_container_width=True,
-        type="primary" if st.session_state["active_analysis_section"] == "explore"
-        else "secondary",
-        on_click=select_analysis_section,
-        args=("explore",),
-    )
-with action_columns[1]:
-    st.button(
-        "Hide compare" if st.session_state["active_analysis_section"] == "compare"
-        else "Compare",
-        key="compare_analysis_section",
-        use_container_width=True,
-        type="primary" if st.session_state["active_analysis_section"] == "compare"
-        else "secondary",
-        on_click=select_analysis_section,
-        args=("compare",),
-    )
-
-if st.session_state["active_analysis_section"] is None:
-    st.stop()
-
-st.divider()
-
 dive_records = complaints.merge(
     batches[["Batch_Number", "Production_Date"]], on="Batch_Number", how="left"
 )
@@ -849,17 +1261,19 @@ def arrow_cell_style(text: str) -> str:
     return f"background-color: {color}" if color else ""
 
 
-def render_explore_section() -> None:
+def render_explore_section(key_prefix: str = "") -> None:
     st.subheader("Explore PQR trends by REX, product, or batch date")
     top_columns = st.columns(3)
     dive_year = top_columns[0].selectbox(
-        "Year", years, index=len(years) - 1, key="dive_year"
+        "Year", years, index=len(years) - 1, key=f"{key_prefix}dive_year"
     )
     dive_metric = top_columns[1].selectbox(
-        "Metric", ["PQR count", "PQR rate", "Settlement total"], key="dive_metric"
+        "Metric", ["PQR count", "PQR rate", "Settlement total"],
+        key=f"{key_prefix}dive_metric"
     )
     color_dimension = top_columns[2].selectbox(
-        "Split chart by", ["None", "REX", "Batch date", "Product family"], key="dive_color"
+        "Split chart by", ["None", "REX", "Batch date", "Product family"],
+        key=f"{key_prefix}dive_color"
     )
 
     scoped_records = dive_records[dive_records["Year"] == dive_year]
@@ -869,7 +1283,7 @@ def render_explore_section() -> None:
     for column, dimension in zip(filter_columns, ["REX", "Batch date", "Product family"]):
         options = sorted(scoped_records[dimension].dropna().unique().tolist())
         dive_filters[dimension] = column.multiselect(
-            dimension, options, key=f"dive_filter_{dimension}",
+            dimension, options, key=f"{key_prefix}dive_filter_{dimension}",
             placeholder=f"All {dimension.lower()}s",
         )
     for dimension, values in dive_filters.items():
@@ -963,11 +1377,8 @@ def render_explore_section() -> None:
     else:
         st.dataframe(display_trend, use_container_width=True, hide_index=True)
 
-    if st.button("Look into complaint stats/comments for this selection",
-                 key="explore_complaint_stats", type="primary"):
-        st.session_state["show_explore_details"] = True
-
-    if st.session_state.get("show_explore_details", False):
+    st.session_state[f"{key_prefix}show_explore_details"] = True
+    if st.session_state[f"{key_prefix}show_explore_details"]:
         st.subheader("Complaint stats comparison")
         reason_counts = (scoped_records.groupby("Reason").size()
                          .rename("Complaints").reset_index())
@@ -981,6 +1392,7 @@ def render_explore_section() -> None:
             )
         else:
             reason_counts["Value"] = reason_counts["Complaints"]
+        reason_counts = reason_counts.sort_values("Value", ascending=False)
         reason_counts["Percent"] = (
             reason_counts["Complaints"] / len(scoped_records) * 100
         )
@@ -1000,6 +1412,7 @@ def render_explore_section() -> None:
             text=reason_label_column,
             title=f"{dive_metric} by complaint reason",
             labels={"Value": value_label},
+            category_orders={"Reason": reason_counts["Reason"].tolist()},
         )
         reason_fig.update_traces(texttemplate=reason_label_format,
                                  textposition="outside", cliponaxis=False)
@@ -1011,6 +1424,12 @@ def render_explore_section() -> None:
         with st.container(height=430, border=True):
             st.dataframe(comment_table, use_container_width=True, hide_index=True)
 
+
+with all_trends_tab:
+    render_explore_section("all_trends_")
+
+if st.session_state["active_analysis_section"] is None:
+    st.stop()
 
 if st.session_state["active_analysis_section"] == "explore":
     render_explore_section()

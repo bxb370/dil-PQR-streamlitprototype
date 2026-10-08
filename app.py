@@ -43,57 +43,22 @@ CATEGORY_BY_REASON = {
     "Service Satisfaction Guarantee": "In-Store Resolution",
 }
 
-st.set_page_config(page_title="PQR Dashboard", page_icon="▦", layout="wide")
-
-px.defaults.template = "plotly_white"
-px.defaults.color_discrete_sequence = ["#1f4e79", "#4f81a1", "#7f9db9", "#b7c9d6", "#d28b5d"]
+st.set_page_config(page_title="PQR Dashboard", page_icon="🎨", layout="wide")
 
 st.markdown(
     """
     <style>
-    :root {
-        --navy: #17324d;
-        --blue: #1f4e79;
-        --muted: #687887;
-        --line: #d8e0e6;
-        --surface: #ffffff;
-        --workspace: #f3f6f8;
-    }
-    .stAppViewContainer { background: var(--workspace); }
-    .main .block-container { max-width: 1480px; padding-top: 2rem; padding-bottom: 3rem; }
-    [data-testid="stSidebar"] { background: var(--navy); }
-    [data-testid="stSidebar"] h2,
-    [data-testid="stSidebar"] label,
-    [data-testid="stSidebar"] .stMarkdown { color: #ffffff; }
-    [data-testid="stSidebar"] [data-baseweb="select"] > div {
-        background: #ffffff;
-        border-color: #9fb2c2;
-    }
-    h1, h2, h3, h4 { color: var(--navy); letter-spacing: 0; }
-    h1 { font-size: 2rem; font-weight: 700; }
-    h2, h3 { font-weight: 650; }
-    [data-testid="stMetricValue"] { color: var(--navy); }
-    [data-testid="stMetricLabel"] { color: var(--muted); }
-    [data-testid="stMetricDelta"] { font-size: 0.8rem; }
-    [data-baseweb="tab-list"] { gap: 0.25rem; border-bottom: 1px solid var(--line); }
-    [data-baseweb="tab"] { color: var(--muted); font-weight: 600; padding: 0.7rem 1rem; }
-    [aria-selected="true"][data-baseweb="tab"] { color: var(--blue); }
-    [data-baseweb="tab-highlight"] { background: var(--blue); }
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        box-shadow: 0 1px 2px rgba(23, 50, 77, 0.04);
-    }
-    .st-key-rex-year-panel, .st-key-rex-increase-panel,
-    .st-key-rex-compare-panel, .st-key-rex-stats-panel,
-    .st-key-rex-comments-panel, .st-key-product-year-panel,
-    .st-key-product-increase-panel, .st-key-product-compare-panel,
-    .st-key-product-stats-panel, .st-key-product-comments-panel {
-        background: var(--surface);
-        border-color: var(--line);
-    }
-    [data-testid="stDataFrame"] { border: 1px solid var(--line); }
+    .stAppViewContainer { background: #ffffff; }
+    .st-key-rex-year-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-rex-increase-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-rex-compare-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-rex-stats-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-rex-comments-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-year-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-increase-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-compare-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-stats-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-product-comments-panel { background: #ffffff; border-color: #d1d5db; }
     </style>
     """,
     unsafe_allow_html=True,

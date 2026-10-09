@@ -49,6 +49,17 @@ st.markdown(
     """
     <style>
     .stAppViewContainer { background: #ffffff; }
+    .stTabs [role="tablist"] { gap: 8px; padding: 6px 0; }
+    .stTabs [role="tab"] { padding: 8px 12px; min-height: 42px;
+        background: #f0f3f6; border: 1px solid #d1d5db; border-radius: 4px;
+        color: #334155; white-space: nowrap; }
+    .stTabs [role="tab"][aria-selected="true"] {
+        background: #174269; border-color: #174269; color: #ffffff !important; }
+    .stTabs [role="tab"] p { color: inherit !important; }
+    .stTabs [role="tab"]:hover { border-color: #174269; }
+    .stTabs [role="tab"]:focus-visible { outline: 2px solid #174269; outline-offset: 2px; }
+    .stTabs .react-aria-SelectionIndicator,
+    .stTabs [data-baseweb="tab-highlight"] { display: none; }
     .st-key-rex-year-panel { background: #ffffff; border-color: #d1d5db; }
     .st-key-rex-increase-panel { background: #ffffff; border-color: #d1d5db; }
     .st-key-rex-compare-panel { background: #ffffff; border-color: #d1d5db; }
@@ -187,7 +198,11 @@ if complaints.empty or batches.empty:
     st.stop()
 
 dashboard_tab, rex_tab, product_tab, batch_date_tab, all_trends_tab = st.tabs([
-    "Overview", "REX view", "Product view", "Batch date view", "All trends explorer"
+    ":material/dashboard: Overview",
+    "REX View",
+    "Product View",
+    "Batch Date View",
+    ":material/monitoring: All Trends Explorer",
 ])
 
 with rex_tab:

@@ -191,13 +191,13 @@ dashboard_tab, rex_tab, product_tab, batch_date_tab, all_trends_tab = st.tabs([
 ])
 
 with rex_tab:
-    st.subheader("REX view")
+    st.subheader("REX View")
 
 with product_tab:
-    st.subheader("Product view")
+    st.subheader("Product View")
 
 with batch_date_tab:
-    st.subheader("Batch date view")
+    st.subheader("Batch Date View")
 
 dashboard_tab.__enter__()
 st.title("PQR Overview")
@@ -314,8 +314,22 @@ render_card(
 )
 
 
+def render_chart(fig: go.Figure) -> None:
+    if fig.layout.title.text:
+        title_text = " ".join(
+            word[:1].upper() + word[1:] for word in fig.layout.title.text.split()
+        )
+        title_lines = textwrap.wrap(title_text, width=28)
+        fig.update_layout(
+            title=dict(text="<br>".join(title_lines), font=dict(size=20),
+                       x=0.03, xanchor="left", y=1 - 32 / (fig.layout.height or 450),
+                       yanchor="top", yref="container"),
+            margin=dict(t=max(fig.layout.margin.t or 0, 40 + 26 * len(title_lines))),
+        )
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def render_overview_trends() -> None:
-    st.subheader("Yearly trend")
     if metric == "PQR count":
         year_metric = complaints.groupby("Year").size().rename("Value").reset_index()
         value_label = "PQR count"
@@ -344,9 +358,8 @@ def render_overview_trends() -> None:
                           title=f"{metric} by year", labels={"Value": value_label})
         year_fig.update_traces(texttemplate=text_format, textposition="outside")
     year_fig.update_layout(height=380, xaxis=dict(type="category"))
-    st.plotly_chart(year_fig, use_container_width=True)
+    render_chart(year_fig)
 
-    st.subheader("Monthly trend")
     scoped_complaints = complaints.copy()
     scoped_batches = batches.copy()
     scoped_complaints["Month"] = scoped_complaints["Date"].dt.month
@@ -385,7 +398,7 @@ def render_overview_trends() -> None:
     )
     monthly_fig.update_traces(texttemplate=text_format, textposition="top center")
     monthly_fig.update_layout(height=400, xaxis_title="Month", yaxis_title=value_label)
-    st.plotly_chart(monthly_fig, use_container_width=True)
+    render_chart(monthly_fig)
     monthly_table = (monthly_count.pivot(index="Year", columns="Month name", values="Value")
                      .reindex(columns=month_order, fill_value=0).fillna(0))
     monthly_table["Total"] = monthly_table.sum(axis=1)
@@ -398,7 +411,6 @@ def render_overview_trends() -> None:
     )
     st.dataframe(monthly_table, use_container_width=True, hide_index=True)
 
-    st.subheader("Complaint trend")
     if month_complaints.empty:
         st.info(f"No complaints recorded for {current_period_label}.")
         return
@@ -432,7 +444,7 @@ def render_overview_trends() -> None:
     )
     complaint_fig.update_layout(height=500, coloraxis_showscale=False,
                                 yaxis_title=reason_label, xaxis=dict(tickangle=-45))
-    st.plotly_chart(complaint_fig, use_container_width=True)
+    render_chart(complaint_fig)
     complaint_table = (reason_contribution.pivot_table(
         index="Reason", columns="Month", values="Value", aggfunc="sum", fill_value=0
     ).reindex(columns=reason_order, fill_value=0))
@@ -495,7 +507,7 @@ def change_by(key: str, label: str) -> pd.DataFrame:
 
 
 def worst_chart(frame: pd.DataFrame, label_column: str, value_label: str,
-                chart_metric: str | None = None) -> None:
+                chart_metric: str | None = None, title: str | None = None) -> None:
     if frame.empty:
         st.info("Nothing to show.")
         return
@@ -504,12 +516,12 @@ def worst_chart(frame: pd.DataFrame, label_column: str, value_label: str,
         chart_metric, "%{x:.3f}")
     fig = px.bar(frame, x="Value", y=label_column, orientation="h",
                  color="Value", color_continuous_scale="Reds",
-                 labels={"Value": value_label})
+                 labels={"Value": value_label}, title=title)
     fig.update_traces(texttemplate=text_format, textposition="outside", cliponaxis=False,
                       hovertemplate=f"%{{y}}<br>{value_label}: {text_format}<extra></extra>")
     fig.update_layout(height=420, coloraxis_showscale=False, margin=dict(t=10, r=60),
                       yaxis=dict(type="category", autorange="reversed", title=None))
-    st.plotly_chart(fig, use_container_width=True)
+    render_chart(fig)
 
 
 def pqr_rate_by(complaint_rows: pd.DataFrame, batch_rows: pd.DataFrame,
@@ -555,7 +567,7 @@ def render_rex_rate_trend(rex_numbers: list[str], title: str) -> None:
                   title=title, labels={"Period": "Month"})
     fig.update_traces(hovertemplate="%{fullData.name}<br>PQR rate: %{y:.3f}<extra></extra>")
     fig.update_layout(height=420, xaxis_title="Month", yaxis_title="PQR rate")
-    st.plotly_chart(fig, use_container_width=True)
+    render_chart(fig)
 
 
 def product_monthly_rates(product_families: list[str]) -> pd.DataFrame:
@@ -596,12 +608,11 @@ def render_product_rate_trend(product_families: list[str], title: str) -> None:
                   title=title, labels={"Period": "Month"})
     fig.update_traces(hovertemplate="%{fullData.name}<br>PQR rate: %{y:.3f}<extra></extra>")
     fig.update_layout(height=420, xaxis_title="Month", yaxis_title="PQR rate")
-    st.plotly_chart(fig, use_container_width=True)
+    render_chart(fig)
 
 
 with rex_tab:
     with st.container(border=True, key="rex-year-panel"):
-        st.subheader(f"Highest PQR rate REXs · {current_year}")
         current_year_complaints = in_year(complaints, "Date", current_year)
         current_year_batches = in_year(batches, "Production_Date", current_year)
         current_year_rex = top_worst(
@@ -610,7 +621,8 @@ with rex_tab:
         current_year_rex["REX"] = current_year_rex["REX"].astype(str)
         ranking_column, trend_column = st.columns(2)
         with ranking_column:
-            worst_chart(current_year_rex, "REX", "PQR rate", chart_metric="PQR rate")
+            worst_chart(current_year_rex, "REX", "PQR rate", chart_metric="PQR rate",
+                        title=f"Highest PQR rate REXs · {current_year}")
         with trend_column:
             render_rex_rate_trend(
                 current_year_rex["REX"].tolist(),
@@ -618,9 +630,6 @@ with rex_tab:
             )
 
     with st.container(border=True, key="rex-increase-panel"):
-        st.subheader(
-            f"Highest PQR rate increases by REX · {previous_period_label} to {current_period_label}"
-        )
         current_rex_rates = pqr_rate_by(month_complaints, month_batches, "REX_Number")
         prior_rex_rates = pqr_rate_by(
             in_month(complaints, "Date", previous_period),
@@ -638,7 +647,8 @@ with rex_tab:
         increase_column, monthly_trend_column = st.columns(2)
         with increase_column:
             worst_chart(monthly_rex[["REX", "Value"]], "REX", "PQR rate increase",
-                        chart_metric="PQR rate")
+                        chart_metric="PQR rate",
+                        title=f"Highest PQR rate increases by REX · {previous_period_label} to {current_period_label}")
         with monthly_trend_column:
             render_rex_rate_trend(
                 monthly_rex["REX"].tolist(),
@@ -647,7 +657,6 @@ with rex_tab:
 
     compare_panel = st.container(border=True, key="rex-compare-panel")
     compare_panel.__enter__()
-    st.subheader("Compare PQR trends")
     comparison_start = min(complaints["Date"].min(), batches["Production_Date"].min())
     comparison_end = max(complaints["Date"].max(), batches["Production_Date"].max())
     rex_options = ["None"] + sorted(complaints["REX_Number"].dropna().unique().tolist())
@@ -717,7 +726,7 @@ with rex_tab:
             labels={"Value": rex_comparison_metric, "Period": "Month"},
         )
         comparison_fig.update_layout(height=420, xaxis_title="Month", yaxis_title=rex_comparison_metric)
-        st.plotly_chart(comparison_fig, use_container_width=True)
+        render_chart(comparison_fig)
         rex_comparison_table = rex_comparison_trend.pivot_table(
             index="Selection", columns="Period", values="Value", aggfunc="sum", fill_value=0
         ).sort_index(axis=1)
@@ -730,7 +739,6 @@ with rex_tab:
 
     stats_panel = st.container(border=True, key="rex-stats-panel")
     stats_panel.__enter__()
-    st.subheader("Complaint stats comparison")
     reason_frames = []
     detail_frames = []
     for selection_number, (selected_rex, selected_dates) in enumerate(
@@ -775,14 +783,14 @@ with rex_tab:
             category_orders={"Reason": reason_order},
         )
         reason_fig.update_layout(height=500, xaxis_tickangle=-45)
-        st.plotly_chart(reason_fig, use_container_width=True)
+        render_chart(reason_fig)
     else:
         st.info("Choose a REX above to view complaint statistics.")
 
     stats_panel.__exit__(None, None, None)
     comments_panel = st.container(border=True, key="rex-comments-panel")
     comments_panel.__enter__()
-    st.subheader("Complaint comments")
+    st.subheader("Complaint Comments")
     if detail_frames:
         detail_columns = st.columns(2)
         for column, (label, detail) in zip(detail_columns, detail_frames):
@@ -804,7 +812,6 @@ with rex_tab:
 
 with product_tab:
     with st.container(border=True, key="product-year-panel"):
-        st.subheader(f"PQR rate by product family · {current_year}")
         current_year_complaints = in_year(complaints, "Date", current_year)
         current_year_batches = in_year(batches, "Production_Date", current_year)
         current_year_products = top_worst(
@@ -815,7 +822,8 @@ with product_tab:
         ranking_column, trend_column = st.columns(2)
         with ranking_column:
             worst_chart(current_year_products, "Product family", "PQR rate",
-                        chart_metric="PQR rate")
+                        chart_metric="PQR rate",
+                        title=f"PQR rate by product family · {current_year}")
         with trend_column:
             render_product_rate_trend(
                 current_year_products["Product family"].tolist(),
@@ -823,10 +831,6 @@ with product_tab:
             )
 
     with st.container(border=True, key="product-increase-panel"):
-        st.subheader(
-            "PQR rate increases by product family · "
-            f"{previous_period_label} to {current_period_label}"
-        )
         current_product_rates = pqr_rate_by(month_complaints, month_batches, "Product_Line")
         prior_product_rates = pqr_rate_by(
             in_month(complaints, "Date", previous_period),
@@ -847,7 +851,9 @@ with product_tab:
         increase_column, monthly_trend_column = st.columns(2)
         with increase_column:
             worst_chart(monthly_products[["Product family", "Value"]], "Product family",
-                        "PQR rate increase", chart_metric="PQR rate")
+                        "PQR rate increase", chart_metric="PQR rate",
+                        title="PQR rate increases by product family · "
+                        f"{previous_period_label} to {current_period_label}")
         with monthly_trend_column:
             render_product_rate_trend(
                 monthly_products["Product family"].tolist(),
@@ -857,7 +863,6 @@ with product_tab:
 
     product_compare_panel = st.container(border=True, key="product-compare-panel")
     product_compare_panel.__enter__()
-    st.subheader("Compare PQR trends")
     comparison_start = min(complaints["Date"].min(), batches["Production_Date"].min())
     comparison_end = max(complaints["Date"].max(), batches["Production_Date"].max())
     product_options = ["None"] + sorted(complaints["Product_Line"].dropna().unique().tolist())
@@ -933,7 +938,7 @@ with product_tab:
         )
         comparison_fig.update_layout(height=420, xaxis_title="Month",
                                      yaxis_title=product_comparison_metric)
-        st.plotly_chart(comparison_fig, use_container_width=True)
+        render_chart(comparison_fig)
         product_comparison_table = product_comparison_trend.pivot_table(
             index="Selection", columns="Period", values="Value", aggfunc="sum", fill_value=0
         ).sort_index(axis=1)
@@ -946,7 +951,6 @@ with product_tab:
 
     product_stats_panel = st.container(border=True, key="product-stats-panel")
     product_stats_panel.__enter__()
-    st.subheader("Complaint stats comparison")
     product_reason_frames = []
     product_detail_frames = []
     for selection_number, (selected_product, selected_dates) in enumerate(
@@ -993,14 +997,14 @@ with product_tab:
             category_orders={"Reason": product_reason_order},
         )
         reason_fig.update_layout(height=500, xaxis_tickangle=-45)
-        st.plotly_chart(reason_fig, use_container_width=True)
+        render_chart(reason_fig)
     else:
         st.info("Choose a product family above to view complaint statistics.")
     product_stats_panel.__exit__(None, None, None)
 
     product_comments_panel = st.container(border=True, key="product-comments-panel")
     product_comments_panel.__enter__()
-    st.subheader("Complaint comments")
+    st.subheader("Complaint Comments")
     if product_detail_frames:
         detail_columns = st.columns(2)
         for column, (label, detail) in zip(detail_columns, product_detail_frames):
@@ -1080,7 +1084,7 @@ elif focus == "year":
                           title=f"{metric} by year", labels={"Value": value_label})
         year_fig.update_traces(texttemplate=text_format, textposition="outside")
     year_fig.update_layout(height=380, xaxis=dict(type="category"))
-    st.plotly_chart(year_fig, use_container_width=True)
+    render_chart(year_fig)
 elif focus == "month":
     scope_years = years
     scoped_complaints = complaints[complaints["Year"].isin(scope_years)].copy()
@@ -1122,7 +1126,7 @@ elif focus == "month":
                         title=f"{metric} by month")
     count_fig.update_traces(texttemplate=text_format, textposition="top center")
     count_fig.update_layout(height=400, xaxis_title="Month", yaxis_title=value_label)
-    st.plotly_chart(count_fig, use_container_width=True)
+    render_chart(count_fig)
 
     monthly_table = (monthly_count.pivot(index="Year", columns="Month name", values="Value")
                      .reindex(columns=month_order, fill_value=0)
@@ -1191,7 +1195,7 @@ else:
         category_fig.update_layout(height=500, coloraxis_showscale=False,
                                    yaxis_title=reason_value_label,
                                    xaxis=dict(tickangle=-45))
-        st.plotly_chart(category_fig, use_container_width=True)
+        render_chart(category_fig)
 
 if "active_analysis_section" not in st.session_state:
     st.session_state["active_analysis_section"] = None
@@ -1262,7 +1266,6 @@ def arrow_cell_style(text: str) -> str:
 
 
 def render_explore_section(key_prefix: str = "") -> None:
-    st.subheader("Explore PQR trends by REX, product, or batch date")
     top_columns = st.columns(3)
     dive_year = top_columns[0].selectbox(
         "Year", years, index=len(years) - 1, key=f"{key_prefix}dive_year"
@@ -1327,7 +1330,7 @@ def render_explore_section(key_prefix: str = "") -> None:
     trend_fig.update_traces(text=trend["Value"], texttemplate=text_format,
                             textposition="top center")
     trend_fig.update_layout(height=430, yaxis_title=value_label, xaxis_title="Month")
-    st.plotly_chart(trend_fig, use_container_width=True)
+    render_chart(trend_fig)
 
     if color_dimension == "None":
         trend_table = trend.set_index("Period")[["Value"]].T
@@ -1380,7 +1383,6 @@ def render_explore_section(key_prefix: str = "") -> None:
 
     st.session_state[f"{key_prefix}show_explore_details"] = True
     if st.session_state[f"{key_prefix}show_explore_details"]:
-        st.subheader("Complaint stats comparison")
         reason_counts = (scoped_records.groupby("Reason").size()
                          .rename("Complaints").reset_index())
         if dive_metric == "Settlement total":
@@ -1418,9 +1420,9 @@ def render_explore_section(key_prefix: str = "") -> None:
         reason_fig.update_traces(texttemplate=reason_label_format,
                                  textposition="outside", cliponaxis=False)
         reason_fig.update_layout(height=500, xaxis_tickangle=-45)
-        st.plotly_chart(reason_fig, use_container_width=True)
+        render_chart(reason_fig)
 
-        st.subheader("Complaint comments")
+        st.subheader("Complaint Comments")
         comment_table = format_comment_table(scoped_records)
         with st.container(height=430, border=True):
             st.dataframe(comment_table, use_container_width=True, hide_index=True)
@@ -1436,7 +1438,6 @@ if st.session_state["active_analysis_section"] == "explore":
     render_explore_section()
     st.stop()
 
-st.subheader("Compare PQR trends")
 st.caption("Compare two REXes, product families, or batch dates over selected years.")
 
 comparison_dimensions = {
@@ -1568,9 +1569,9 @@ else:
         comparison_trend_fig.update_traces(hovertemplate="%{y:,.3f}<extra></extra>")
 comparison_trend_fig.update_layout(height=420, yaxis_title=comparison_metric,
                                    xaxis_title="Month")
-st.plotly_chart(comparison_trend_fig, use_container_width=True)
+render_chart(comparison_trend_fig)
 
-st.subheader("Comparison values")
+st.subheader("Comparison Values")
 if comparison_frames:
     comparison_table = (comparison_trend.pivot_table(
         index="Selection", columns="Period", values="Value", aggfunc="sum", fill_value=0
@@ -1627,7 +1628,6 @@ if st.button("Look into complaint stats/comments for these selections", type="pr
 
 if st.session_state.get("show_comparison_details", False):
     st.divider()
-    st.subheader("Complaint stats comparison")
 
     reason_frames = []
     detail_frames = []
@@ -1692,7 +1692,7 @@ if st.session_state.get("show_comparison_details", False):
     reason_fig.update_traces(texttemplate=reason_label_format, textposition="outside",
                              cliponaxis=False)
     reason_fig.update_layout(height=500, xaxis_tickangle=-45)
-    st.plotly_chart(reason_fig, use_container_width=True)
+    render_chart(reason_fig)
 
     detail_columns = st.columns(2)
     for column, selection_number, detail in zip(detail_columns, range(1, 3), detail_frames):

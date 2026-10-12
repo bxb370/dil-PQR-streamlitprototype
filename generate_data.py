@@ -113,6 +113,32 @@ def _comment(reason: str, rng: random.Random) -> str:
     )
 
 
+def limit_high_complaint_orders(complaints: pd.DataFrame,
+                   max_orders: int = 20) -> pd.DataFrame:
+    counts = complaints.groupby("Batch_Number").size().sort_values(
+        ascending=False, kind="stable"
+    )
+    high_complaint_orders = counts[counts > 3].head(max_orders).index
+    limits = pd.Series(3, index=counts.index)
+    if len(high_complaint_orders):
+        target_counts = np.linspace(
+            4, counts.loc[high_complaint_orders].max(), len(high_complaint_orders)
+        ).round().astype(int)[::-1]
+        limits.loc[high_complaint_orders] = np.minimum(
+            counts.loc[high_complaint_orders].to_numpy(), target_counts
+        )
+    keep = complaints.groupby("Batch_Number").cumcount() < complaints["Batch_Number"].map(limits)
+    result = complaints.loc[keep].copy()
+    if "Date" in result:
+        result["Date"] = pd.to_datetime(result["Date"])
+        outlier_rows = result["Batch_Number"].isin(high_complaint_orders)
+        result.loc[outlier_rows, "Date"] = result.loc[outlier_rows, "Date"].map(
+            lambda value: value + pd.DateOffset(years=END_DATE.year - value.year)
+        )
+        result = result.sort_values([column for column in ["Date", "Time"] if column in result])
+    return result.reset_index(drop=True)
+
+
 def make_complaints(formulas: pd.DataFrame, batches: pd.DataFrame,
                     rng: random.Random, np_rng: np.random.Generator) -> pd.DataFrame:
     rows = []
@@ -163,7 +189,7 @@ def make_complaints(formulas: pd.DataFrame, batches: pd.DataFrame,
             )
 
     df = pd.DataFrame(rows).sort_values(["Date", "Time"]).reset_index(drop=True)
-    return df
+    return limit_high_complaint_orders(df)
 
 
 def main() -> None:

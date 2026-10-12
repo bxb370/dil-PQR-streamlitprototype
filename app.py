@@ -70,6 +70,8 @@ st.markdown(
     .st-key-product-compare-panel { background: #ffffff; border-color: #d1d5db; }
     .st-key-product-stats-panel { background: #ffffff; border-color: #d1d5db; }
     .st-key-product-comments-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-order-stats-panel { background: #ffffff; border-color: #d1d5db; }
+    .st-key-order-comments-panel { background: #ffffff; border-color: #d1d5db; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -78,11 +80,24 @@ st.markdown(
 
 @st.cache_data
 def load_data(complaints_mtime: float = 0):
-    complaints = pd.read_csv(os.path.join(DATA_DIR, "complaints.csv"), parse_dates=["Date"])
+    complaints = pd.read_csv(
+        os.path.join(DATA_DIR, "complaints.csv"), parse_dates=["Date"],
+        dtype={"Batch_Number": str, "Order_Number": str},
+    )
     if "Settlement_Total" not in complaints:
         ticket_numbers = complaints["Ticket_ID"].str.rsplit("-", n=1).str[-1].astype(int)
         complaints["Settlement_Total"] = (25 + (ticket_numbers * 7919 % 497500) / 100).round(2)
-    batches = pd.read_csv(os.path.join(DATA_DIR, "batches.csv"), parse_dates=["Production_Date"])
+    batches = pd.read_csv(
+        os.path.join(DATA_DIR, "batches.csv"), parse_dates=["Production_Date"],
+        dtype={"Batch_Number": str, "Order_Number": str},
+    )
+    if "Order_Number" not in batches:
+        batches["Order_Number"] = batches["Batch_Number"]
+    if "Order_Number" not in complaints:
+        order_by_batch = batches[["Batch_Number", "Order_Number"]].drop_duplicates()
+        complaints = complaints.merge(
+            order_by_batch, on="Batch_Number", how="left", validate="many_to_one"
+        )
     formulas = pd.read_csv(os.path.join(DATA_DIR, "formulas.csv"))
     complaints = complaints.merge(formulas, on="REX_Number", how="left")
     batches = batches.merge(formulas, on="REX_Number", how="left")
@@ -213,6 +228,131 @@ with product_tab:
 
 with batch_date_tab:
     st.subheader("Batch Date View")
+    order_year = int(max(complaints["Date"].dt.year.max(),
+                         batches["Production_Date"].dt.year.max()))
+    order_year_complaints = complaints[complaints["Date"].dt.year == order_year]
+    top_orders = (order_year_complaints.groupby("Order_Number").size().rename("Complaints")
+                  .reset_index().loc[lambda frame: frame["Complaints"] > 3].sort_values(
+                      ["Complaints", "Order_Number"], ascending=[False, True]
+                  ).reset_index(drop=True))
+    top_orders = top_orders.rename(columns={"Order_Number": "Order number"})
+    ranking_column, trend_column = st.columns(2)
+    selected_order = None
+    with ranking_column:
+        st.markdown("#### Order Number")
+        if not top_orders.empty:
+            order_fig = px.bar(
+                top_orders, x="Order number", y="Complaints", text="Complaints",
+                custom_data=["Order number"], color_discrete_sequence=["#b91c1c"],
+                category_orders={"Order number": top_orders["Order number"].tolist()},
+            )
+            order_fig.update_traces(
+                textposition="outside", cliponaxis=False,
+                hovertemplate="Order %{customdata[0]}<br>Complaints: %{y:,}<extra></extra>",
+            )
+            order_fig.update_layout(
+                height=420, xaxis=dict(type="category", tickangle=-45),
+                yaxis=dict(rangemode="tozero", dtick=1), dragmode=False,
+                margin=dict(t=30, b=120), showlegend=False,
+            )
+            order_selection = st.plotly_chart(
+                order_fig, use_container_width=True, on_select="rerun",
+                selection_mode="points",
+                key=f"batch_date_order_chart_{selected_market}_{selected_division}",
+            )
+            selected_points = order_selection["selection"]["points"]
+            if selected_points:
+                clicked_order = selected_points[-1]["customdata"][0]
+                if clicked_order in top_orders["Order number"].values:
+                    selected_order = clicked_order
+        else:
+            st.info("No orders with more than 3 complaints match the selected filters.")
+
+    with trend_column:
+        st.markdown(f"#### Monthly complaint counts · {order_year}")
+        trend_orders = ([selected_order] if selected_order is not None
+                        else top_orders["Order number"].tolist())
+        if trend_orders:
+            if selected_order is not None:
+                st.caption(f"Order {selected_order}")
+            year_complaints = order_year_complaints[
+                order_year_complaints["Order_Number"].isin(trend_orders)
+            ]
+            monthly_index = pd.MultiIndex.from_product(
+                [trend_orders, range(1, 13)], names=["Order_Number", "Month"]
+            )
+            monthly_counts = (year_complaints.groupby(
+                ["Order_Number", year_complaints["Date"].dt.month.rename("Month")]
+            ).size().reindex(monthly_index, fill_value=0)
+                .rename("Complaints").reset_index())
+            monthly_fig = px.line(
+                monthly_counts, x="Month", y="Complaints", color="Order_Number",
+                markers=True, custom_data=["Order_Number"],
+                labels={"Order_Number": "Order number"},
+            )
+            monthly_fig.update_traces(
+                hovertemplate="Order %{customdata[0]}<br>Month: %{x}"
+                              "<br>Complaints: %{y:,}<extra></extra>"
+            )
+            monthly_fig.update_layout(
+                height=420,
+                xaxis=dict(tickmode="array", tickvals=list(range(1, 13)),
+                           ticktext=pd.date_range(f"{order_year}-01-01", periods=12,
+                                                  freq="MS").strftime("%b").tolist()),
+                yaxis=dict(rangemode="tozero", dtick=1),
+                showlegend=selected_order is None,
+                margin=dict(t=30, b=60),
+            )
+            st.plotly_chart(monthly_fig, use_container_width=True, key="order-monthly-chart")
+        else:
+            st.info("No orders with more than 3 complaints match the selected filters.")
+
+    with st.container(border=True, key="order-stats-panel"):
+        if selected_order is not None:
+            order_complaints = complaints[complaints["Order_Number"] == selected_order].copy()
+            order_complaints["Category"] = order_complaints["Reason"].map(
+                CATEGORY_BY_REASON
+            ).fillna("Other")
+            reason_counts = (order_complaints.groupby("Reason").size()
+                             .rename("Complaints").reset_index()
+                             .sort_values("Complaints", ascending=False))
+            reason_counts["% of order complaints"] = (
+                reason_counts["Complaints"] / len(order_complaints) * 100
+            )
+            reason_fig = px.bar(
+                reason_counts, x="Reason", y="% of order complaints",
+                text="% of order complaints", custom_data=["Complaints"],
+                title="% of complaints by complaint reason",
+                category_orders={"Reason": reason_counts["Reason"].tolist()},
+            )
+            reason_fig.update_traces(
+                texttemplate="%{text:.1f}%", textposition="outside", cliponaxis=False,
+                hovertemplate="%{x}<br>%{y:.1f}% of order complaints"
+                              "<br>Complaints: %{customdata[0]:,}<extra></extra>",
+            )
+            reason_fig.update_layout(
+                height=500, xaxis_tickangle=-45,
+                yaxis=dict(ticksuffix="%", rangemode="tozero"),
+            )
+            st.plotly_chart(reason_fig, use_container_width=True, key="order-reason-chart")
+        else:
+            st.info("Choose an order above to view complaint statistics.")
+
+    with st.container(border=True, key="order-comments-panel"):
+        st.subheader("Complaint Comments")
+        if selected_order is not None:
+            st.markdown(f"#### Order {selected_order}")
+            st.caption(f"{len(order_complaints):,} complaints")
+            st.dataframe(
+                order_complaints.sort_values("Date", ascending=False)[[
+                    "Ticket_ID", "Date", "Time", "Comments", "Category", "Reason",
+                    "Settlement_Total", "Batch_Number", "Product_Line", "Plant",
+                    "Region", "Channel",
+                ]],
+                hide_index=True, use_container_width=True,
+            )
+        else:
+            st.info("Choose an order above to view complaint comments.")
 
 dashboard_tab.__enter__()
 st.title("PQR Overview")

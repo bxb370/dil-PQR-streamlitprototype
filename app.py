@@ -98,6 +98,14 @@ def load_data(complaints_mtime: float = 0):
         complaints = complaints.merge(
             order_by_batch, on="Batch_Number", how="left", validate="many_to_one"
         )
+    if "Fill_REX" not in batches:
+        fill_numbers = batches.groupby("REX_Number").cumcount().mod(3).add(1)
+        batches["Fill_REX"] = batches["REX_Number"] + "-F" + fill_numbers.astype(str)
+    if "Fill_REX" not in complaints:
+        complaints = complaints.merge(
+            batches[["Batch_Number", "Fill_REX"]], on="Batch_Number",
+            how="left", validate="many_to_one",
+        )
     formulas = pd.read_csv(os.path.join(DATA_DIR, "formulas.csv"))
     complaints = complaints.merge(formulas, on="REX_Number", how="left")
     batches = batches.merge(formulas, on="REX_Number", how="left")
@@ -214,14 +222,14 @@ if complaints.empty or batches.empty:
 
 dashboard_tab, rex_tab, product_tab, batch_date_tab, all_trends_tab = st.tabs([
     ":material/dashboard: Overview",
-    "REX View",
+    "Master REX View",
     "Product View",
     "Batch Date View",
     ":material/monitoring: All Trends Explorer",
 ])
 
 with rex_tab:
-    st.subheader("REX View")
+    st.subheader("Master REX View")
 
 with product_tab:
     st.subheader("Product View")
@@ -706,10 +714,10 @@ def rex_monthly_rates(rex_numbers: list[str]) -> pd.DataFrame:
                             batch_counts.rename("Batches")], axis=1).reindex(periods).fillna(0)
         values["PQR rate"] = values["Complaints"].div(values["Batches"].replace(0, pd.NA)).fillna(0)
         values["Period"] = values.index.astype(str)
-        values["REX"] = rex_number
-        rows.append(values[["Period", "REX", "PQR rate"]])
+        values["Master REX"] = rex_number
+        rows.append(values[["Period", "Master REX", "Complaints", "Batches", "PQR rate"]])
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(
-        columns=["Period", "REX", "PQR rate"]
+        columns=["Period", "Master REX", "Complaints", "Batches", "PQR rate"]
     )
 
 
@@ -718,11 +726,22 @@ def render_rex_rate_trend(rex_numbers: list[str], title: str) -> None:
     if trend.empty:
         st.info("Nothing to show.")
         return
-    fig = px.line(trend, x="Period", y="PQR rate", color="REX", markers=True,
+    fig = px.line(trend, x="Period", y="PQR rate", color="Master REX", markers=True,
                   title=title, labels={"Period": "Month"})
     fig.update_traces(hovertemplate="%{fullData.name}<br>PQR rate: %{y:.3f}<extra></extra>")
     fig.update_layout(height=420, xaxis_title="Month", yaxis_title="PQR rate")
     render_chart(fig)
+    monthly_rates = trend.pivot(index="Master REX", columns="Period", values="PQR rate")
+    monthly_rates = monthly_rates.reindex(index=rex_numbers)
+    monthly_rates.index.name = "Master REX"
+    monthly_rates.columns.name = None
+    st.caption("PQR rate by month")
+    st.dataframe(
+        monthly_rates.reset_index().style.format(
+            {column: "{:.3f}" for column in monthly_rates.columns}
+        ),
+        use_container_width=True, hide_index=True,
+    )
 
 
 def product_monthly_rates(product_families: list[str]) -> pd.DataFrame:
@@ -771,17 +790,17 @@ with rex_tab:
         current_year_complaints = in_year(complaints, "Date", current_year)
         current_year_batches = in_year(batches, "Production_Date", current_year)
         current_year_rex = top_worst(
-            pqr_rate_by(current_year_complaints, current_year_batches, "REX_Number"), "REX"
+            pqr_rate_by(current_year_complaints, current_year_batches, "REX_Number"), "Master REX"
         )
-        current_year_rex["REX"] = current_year_rex["REX"].astype(str)
+        current_year_rex["Master REX"] = current_year_rex["Master REX"].astype(str)
         ranking_column, trend_column = st.columns(2)
         with ranking_column:
-            worst_chart(current_year_rex, "REX", "PQR rate", chart_metric="PQR rate",
-                        title=f"Highest PQR rate REXs · {current_year}")
+            worst_chart(current_year_rex, "Master REX", "PQR rate", chart_metric="PQR rate",
+                        title=f"Highest PQR rate Master REXs · {current_year}")
         with trend_column:
             render_rex_rate_trend(
-                current_year_rex["REX"].tolist(),
-                f"PQR rate by month · highest PQR rate REXs · {current_year}",
+                current_year_rex["Master REX"].tolist(),
+                f"PQR rate by month · highest PQR rate Master REXs · {current_year}",
             )
 
     with st.container(border=True, key="rex-increase-panel"):
@@ -797,16 +816,16 @@ with rex_tab:
         rex_rate_change["Value"] = rex_rate_change["Current"] - rex_rate_change["Previous"]
         monthly_rex = rex_rate_change[rex_rate_change["Value"] > 0].sort_values(
             "Value", ascending=False
-        ).head(6).reset_index(names="REX")
-        monthly_rex["REX"] = monthly_rex["REX"].astype(str)
+        ).head(6).reset_index(names="Master REX")
+        monthly_rex["Master REX"] = monthly_rex["Master REX"].astype(str)
         increase_column, monthly_trend_column = st.columns(2)
         with increase_column:
-            worst_chart(monthly_rex[["REX", "Value"]], "REX", "PQR rate increase",
+            worst_chart(monthly_rex[["Master REX", "Value"]], "Master REX", "PQR rate increase",
                         chart_metric="PQR rate",
-                        title=f"Highest PQR rate increases by REX · {previous_period_label} to {current_period_label}")
+                        title=f"Highest PQR rate increases by Master REX · {previous_period_label} to {current_period_label}")
         with monthly_trend_column:
             render_rex_rate_trend(
-                monthly_rex["REX"].tolist(),
+                monthly_rex["Master REX"].tolist(),
                 f"PQR rate by month · greatest increases from {previous_period_label} to {current_period_label}",
             )
 
@@ -821,7 +840,18 @@ with rex_tab:
         with column:
             st.markdown(f"#### Selection {selection_number}")
             selected_rex = st.selectbox(
-                "REX", rex_options, key=f"rex_comparison_value_{selection_number}"
+                "Master REX", rex_options, key=f"rex_comparison_value_{selection_number}"
+            )
+            fill_rex_options = ["All"] + sorted(
+                batches.loc[batches["REX_Number"] == selected_rex, "Fill_REX"]
+                .dropna().unique().tolist()
+            )
+            fill_rex_key = f"rex_comparison_fill_{selection_number}"
+            if st.session_state.get(fill_rex_key, "All") not in fill_rex_options:
+                st.session_state[fill_rex_key] = "All"
+            selected_fill_rex = st.selectbox(
+                "Fill REX", fill_rex_options, key=fill_rex_key,
+                disabled=selected_rex == "None",
             )
             selected_dates = st.slider(
                 "Time frame",
@@ -831,7 +861,7 @@ with rex_tab:
                 format="MMM YYYY",
                 key=f"rex_comparison_dates_{selection_number}",
             )
-            rex_comparisons.append((selected_rex, selected_dates))
+            rex_comparisons.append((selected_rex, selected_fill_rex, selected_dates))
 
     rex_comparison_metric = st.selectbox(
         "Comparison metric",
@@ -839,16 +869,18 @@ with rex_tab:
         key="rex_comparison_metric",
     )
     rex_comparison_frames = []
-    for selection_number, (selected_rex, selected_dates) in enumerate(rex_comparisons, start=1):
+    for selection_number, (selected_rex, selected_fill_rex, selected_dates) in enumerate(rex_comparisons, start=1):
         if selected_rex == "None":
             continue
         complaint_scope = complaints[
             (complaints["REX_Number"] == selected_rex)
+            & ((selected_fill_rex == "All") | (complaints["Fill_REX"] == selected_fill_rex))
             & (complaints["Date"] >= pd.Timestamp(selected_dates[0]))
             & (complaints["Date"] < pd.Timestamp(selected_dates[1]) + pd.offsets.MonthBegin(1))
         ].copy()
         batch_scope = batches[
             (batches["REX_Number"] == selected_rex)
+            & ((selected_fill_rex == "All") | (batches["Fill_REX"] == selected_fill_rex))
             & (batches["Production_Date"] >= pd.Timestamp(selected_dates[0]))
             & (batches["Production_Date"] < pd.Timestamp(selected_dates[1]) + pd.offsets.MonthBegin(1))
         ].copy()
@@ -870,7 +902,10 @@ with rex_tab:
                 values = complaint_counts
         frame = comparison_periods.copy()
         frame["Value"] = frame["Period"].map(values).fillna(0)
-        frame["Selection"] = f"Selection {selection_number}: {selected_rex}"
+        selection_label = f"Selection {selection_number}: {selected_rex}"
+        if selected_fill_rex != "All":
+            selection_label += f" / {selected_fill_rex}"
+        frame["Selection"] = selection_label
         rex_comparison_frames.append(frame)
 
     if rex_comparison_frames:
@@ -888,7 +923,7 @@ with rex_tab:
         rex_comparison_table["Total"] = rex_comparison_table.sum(axis=1)
         st.dataframe(rex_comparison_table.reset_index(), use_container_width=True, hide_index=True)
     else:
-        st.info("Choose at least one REX to compare.")
+        st.info("Choose at least one Master REX to compare.")
 
     compare_panel.__exit__(None, None, None)
 
@@ -896,12 +931,13 @@ with rex_tab:
     stats_panel.__enter__()
     reason_frames = []
     detail_frames = []
-    for selection_number, (selected_rex, selected_dates) in enumerate(
+    for selection_number, (selected_rex, selected_fill_rex, selected_dates) in enumerate(
             rex_comparisons, start=1):
         if selected_rex == "None":
             continue
         complaint_scope = complaints[
             (complaints["REX_Number"] == selected_rex)
+            & ((selected_fill_rex == "All") | (complaints["Fill_REX"] == selected_fill_rex))
             & (complaints["Date"] >= pd.Timestamp(selected_dates[0]))
             & (complaints["Date"] < pd.Timestamp(selected_dates[1])
                + pd.offsets.MonthBegin(1))
@@ -916,6 +952,7 @@ with rex_tab:
         elif rex_comparison_metric == "PQR rate":
             batch_count = len(batches[
                 (batches["REX_Number"] == selected_rex)
+                & ((selected_fill_rex == "All") | (batches["Fill_REX"] == selected_fill_rex))
                 & (batches["Production_Date"] >= pd.Timestamp(selected_dates[0]))
                 & (batches["Production_Date"] < pd.Timestamp(selected_dates[1])
                    + pd.offsets.MonthBegin(1))
@@ -923,9 +960,12 @@ with rex_tab:
             reason_counts["Value"] = reason_counts["Complaints"].div(batch_count).fillna(0)
         else:
             reason_counts["Value"] = reason_counts["Complaints"]
-        reason_counts["Selection"] = f"Selection {selection_number}: {selected_rex}"
+        selection_label = f"Selection {selection_number}: {selected_rex}"
+        if selected_fill_rex != "All":
+            selection_label += f" / {selected_fill_rex}"
+        reason_counts["Selection"] = selection_label
         reason_frames.append(reason_counts)
-        detail_frames.append((f"Selection {selection_number}: {selected_rex}", complaint_scope))
+        detail_frames.append((selection_label, complaint_scope))
 
     if reason_frames:
         reason_comparison = pd.concat(reason_frames, ignore_index=True)
@@ -940,7 +980,7 @@ with rex_tab:
         reason_fig.update_layout(height=500, xaxis_tickangle=-45)
         render_chart(reason_fig)
     else:
-        st.info("Choose a REX above to view complaint statistics.")
+        st.info("Choose a Master REX above to view complaint statistics.")
 
     stats_panel.__exit__(None, None, None)
     comments_panel = st.container(border=True, key="rex-comments-panel")
@@ -955,13 +995,13 @@ with rex_tab:
                 st.dataframe(
                     detail.sort_values("Date", ascending=False)[[
                         "Ticket_ID", "Date", "Time", "Comments", "Reason", "Settlement_Total",
-                        "Batch_Number", "Product_Line", "Plant", "Region", "Channel",
-                    ]],
+                        "Fill_REX", "Batch_Number", "Product_Line", "Plant", "Region", "Channel",
+                    ]].rename(columns={"Fill_REX": "Fill REX"}),
                     use_container_width=True,
                     hide_index=True,
                 )
     else:
-        st.info("Choose a REX above to view complaint comments.")
+        st.info("Choose a Master REX above to view complaint comments.")
     comments_panel.__exit__(None, None, None)
 
 
@@ -1186,9 +1226,9 @@ elif focus.startswith("year:"):
     year_complaints = in_year(complaints, "Date", current_year)
     year_batches = in_year(batches, "Production_Date", current_year)
     st.markdown(f"**{choice} by {metric} · {current_year}**")
-    if choice == "Top worst REX":
-        worst_chart(top_worst(metric_by(year_complaints, year_batches, "REX_Number"), "REX"),
-                    "REX", metric)
+    if choice == "Top worst Master REX":
+        worst_chart(top_worst(metric_by(year_complaints, year_batches, "REX_Number"), "Master REX"),
+                    "Master REX", metric)
     elif choice == "Top worst batch date":
         worst_chart(top_worst(metric_by_batch_date(year_batches), "Batch date"),
                     "Batch date", metric)
@@ -1199,9 +1239,9 @@ elif focus.startswith("month:"):
     choice = focus.split(":", 1)[1]
     change_label = f"{metric} change vs {previous_period_label}"
     st.markdown(f"**{choice} · {current_period_label}**")
-    if choice == "Top worst REX":
+    if choice == "Top worst Master REX":
         st.caption(f"Largest {metric} increase vs {previous_period_label}")
-        worst_chart(change_by("REX_Number", "REX"), "REX", change_label)
+        worst_chart(change_by("REX_Number", "Master REX"), "Master REX", change_label)
     elif choice == "Top worst batch date":
         st.caption(f"Highest {metric} by batch date · complaints received in "
                    f"{current_period_label}")
@@ -1358,14 +1398,14 @@ if "active_analysis_section" not in st.session_state:
 dive_records = complaints.merge(
     batches[["Batch_Number", "Production_Date"]], on="Batch_Number", how="left"
 )
-dive_records["REX"] = dive_records["REX_Number"]
+dive_records["Master REX"] = dive_records["REX_Number"]
 dive_records["Batch"] = dive_records["Batch_Number"]
 dive_records["Batch date"] = dive_records["Production_Date"].dt.strftime("%Y-%m-%d")
 dive_records["Product family"] = dive_records["Product_Line"]
 dive_records["Period"] = dive_records["Date"].dt.to_period("M").astype(str)
 
 dive_batches = batches.copy()
-dive_batches["REX"] = dive_batches["REX_Number"]
+dive_batches["Master REX"] = dive_batches["REX_Number"]
 dive_batches["Batch"] = dive_batches["Batch_Number"]
 dive_batches["Batch date"] = dive_batches["Production_Date"].dt.strftime("%Y-%m-%d")
 dive_batches["Product family"] = dive_batches["Product_Line"]
@@ -1382,7 +1422,7 @@ def format_comment_table(records: pd.DataFrame) -> pd.DataFrame:
     table["Day"] = table["Date"].dt.day
     return table[[
         "Ticket_ID", "Year", "Month", "Day", "Time", "Comments", "Reason",
-        "Settlement_Total", "REX", "Batch", "Batch date", "Product family",
+        "Settlement_Total", "Master REX", "Batch", "Batch date", "Product family",
         "Plant", "Region", "Channel",
     ]].rename(columns={
         "Ticket_ID": "Ticket",
@@ -1430,7 +1470,7 @@ def render_explore_section(key_prefix: str = "") -> None:
         key=f"{key_prefix}dive_metric"
     )
     color_dimension = top_columns[2].selectbox(
-        "Split chart by", ["None", "REX", "Batch date", "Product family"],
+        "Split chart by", ["None", "Master REX", "Batch date", "Product family"],
         key=f"{key_prefix}dive_color"
     )
 
@@ -1438,7 +1478,7 @@ def render_explore_section(key_prefix: str = "") -> None:
     scoped_batches = dive_batches[dive_batches["Year"] == dive_year]
     filter_columns = st.columns(3)
     dive_filters = {}
-    for column, dimension in zip(filter_columns, ["REX", "Batch date", "Product family"]):
+    for column, dimension in zip(filter_columns, ["Master REX", "Batch date", "Product family"]):
         options = sorted(scoped_records[dimension].dropna().unique().tolist())
         dive_filters[dimension] = column.multiselect(
             dimension, options, key=f"{key_prefix}dive_filter_{dimension}",
@@ -1593,10 +1633,10 @@ if st.session_state["active_analysis_section"] == "explore":
     render_explore_section()
     st.stop()
 
-st.caption("Compare two REXes, product families, or batch dates over selected years.")
+st.caption("Compare two Master REXs, product families, or batch dates over selected years.")
 
 comparison_dimensions = {
-    "REX": "REX",
+    "Master REX": "Master REX",
     "None": None,
     "Product family": "Product family",
     "Batch date": "Batch date",
@@ -1739,7 +1779,7 @@ if comparison_frames:
         selection["dimension"] == "Product family" for selection in comparison_selections
     )
     rex_comparison = any(
-        selection["dimension"] == "REX" for selection in comparison_selections
+        selection["dimension"] == "Master REX" for selection in comparison_selections
     )
     periods = sorted(comparison_trend["Period"].unique())
     change_column = None
@@ -1789,7 +1829,7 @@ if st.session_state.get("show_comparison_details", False):
     for selection_number, selection in enumerate(comparison_selections, start=1):
         detail_columns = [
             "Ticket_ID", "Date", "Time", "Comments", "Reason", "Settlement_Total",
-            "REX", "Batch", "Batch date", "Product family", "Plant", "Region", "Channel",
+            "Master REX", "Batch", "Batch date", "Product family", "Plant", "Region", "Channel",
         ]
         record_scope = comparison_scope(comparison_records, "Date", selection).copy()
         if selection["value"] is None:

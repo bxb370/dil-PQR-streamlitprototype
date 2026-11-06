@@ -225,6 +225,7 @@ selected_pqr_type = st.session_state["selected_pqr_type"]
 with st.sidebar:
     st.header("Filters")
     render_page_filters("main")
+    st.selectbox("PQR reason", ["Select a reason"], key="pqr_reason", disabled=True)
 
 if selected_market != "All":
     complaints = complaints[complaints["Market"] == selected_market]
